@@ -1,0 +1,44 @@
+[
+  {
+    "id": "subtitle_movie",
+    "image": "tests/data/reference_images/subtitle_movie.jpg",
+    "source": "Tencent-Hunyuan/HunyuanOCR assets/zimu2.jpg",
+    "prompt": "提取图片中的字幕。",
+    "role": "subtitle"
+  },
+  {
+    "id": "invoice_receipt",
+    "image": "tests/data/reference_images/invoice_receipt.jpg",
+    "source": "Tencent-Hunyuan/HunyuanOCR assets/ie_parallel.jpg",
+    "prompt": "提取票据中的文字。",
+    "role": "invoice"
+  },
+  {
+    "id": "calligraphy_vase",
+    "image": "tests/data/reference_images/calligraphy_vase.png",
+    "source": "Tencent-Hunyuan/HunyuanOCR assets/guwan1.png, left input crop",
+    "prompt": "提取图片中的文字。",
+    "role": "calligraphy"
+  },
+  {
+    "id": "schedule_table",
+    "image": "tests/data/reference_images/schedule_table.png",
+    "source": "Tencent-Hunyuan/HunyuanOCR assets/vis_parsing_table.png, left input crop",
+    "prompt": "识别图片中的表格，并用 HTML 表示。",
+    "role": "table"
+  },
+  {
+    "id": "flowchart",
+    "image": "tests/data/reference_images/flowchart.png",
+    "source": "Tencent-Hunyuan/HunyuanOCR assets/parsing_chart1.png, left input crop",
+    "prompt": "解析图片中的流程图，并用 Mermaid 表示。",
+    "role": "flowchart"
+  },
+  {
+    "id": "document_page",
+    "image": "tests/data/reference_images/document_page.png",
+    "source": "Tencent-Hunyuan/HunyuanOCR assets/translation2.png, left input crop",
+    "prompt": "提取并解析文档中的正文。",
+    "role": "document"
+  }
+]

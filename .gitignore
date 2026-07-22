@@ -1,0 +1,60 @@
+.venv/
+
+# CMake/build outputs
+build/
+cmake-build-*/
+out/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+Makefile
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Exported model assets and generated metadata
+assets/
+models/
+tmp/
+*.ncnn.bin
+*.ncnn.param
+*.ncnn.param.nokv
+*.pnnx.bin
+*.pnnx.param
+*.pnnx.onnx
+*_pnnx.py
+*_ncnn.py
+*.pt
+*.pth
+*.safetensors
+*.onnx
+*.npz
+*.npy
+vocab.txt
+merges.txt
+model.json
+
+# Logs and local smoke-test output
+*.log
+perf_*.txt
+core
+core.*
+docs/private/
+
+# Python cache/tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor/OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

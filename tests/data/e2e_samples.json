@@ -1,0 +1,17 @@
+[
+  {
+    "id": "synthetic_en_512",
+    "image": "synthetic_en_512.png",
+    "image_kind": "synthetic_text",
+    "width": 512,
+    "height": 512,
+    "text": "HunyuanOCR ncnn",
+    "prompt": "提取图中的文字",
+    "threads": 4,
+    "max_new_tokens": 1,
+    "expected_grid_h": 32,
+    "expected_grid_w": 32,
+    "expected_vision_tokens": 274,
+    "golden": "expected/synthetic_en_512.json"
+  }
+]

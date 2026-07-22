@@ -1,0 +1,10 @@
+{
+  "id": "synthetic_en_512",
+  "expected_text": "H",
+  "expected_token_ids": [
+    39
+  ],
+  "expected_grid_h": 32,
+  "expected_grid_w": 32,
+  "expected_vision_tokens": 274
+}
