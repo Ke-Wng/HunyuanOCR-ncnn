@@ -26,6 +26,16 @@ ncnn::Mat llm_run_decoder_with_kv(ncnn::Net& network, const ncnn::Mat& embedding
                                   const ncnn::Mat& sine, KvCache& cache, int attention_layers,
                                   bool prefill);
 ncnn::Mat llm_run_lm_head(ncnn::Net& network, const ncnn::Mat& hidden_state);
+#if NCNN_VULKAN
+ncnn::Mat llm_run_decoder_with_kv_vulkan(ncnn::Net& network, const ncnn::Mat& embeddings,
+                                         const ncnn::Mat& mask, const ncnn::Mat& cosine,
+                                         const ncnn::Mat& sine, VulkanKvCache& cache,
+                                         int attention_layers, bool prefill);
+ncnn::Mat llm_run_decoder_lm_head_with_kv_vulkan(ncnn::Net& decoder, ncnn::Net& lm_head,
+                                                 const ncnn::Mat& embeddings, const ncnn::Mat& mask,
+                                                 const ncnn::Mat& cosine, const ncnn::Mat& sine,
+                                                 VulkanKvCache& cache, int attention_layers);
+#endif
 int select_next_token(const ncnn::Mat& logits, const std::unordered_set<int>& history,
                       const TokenSampleConfig& config);
 

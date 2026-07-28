@@ -6,6 +6,10 @@
 #include <numeric>
 #include <stdexcept>
 
+#if NCNN_VULKAN
+#include <gpu.h>
+#endif
+
 #include "internal/engine.h"
 #include "internal/image.h"
 #include "internal/text_runtime.h"
@@ -59,14 +63,80 @@ ncnn::Mat lm_head_input_from_decoder(const ncnn::Mat& decode_out, int token_inde
                   decode_out.dims, decode_out.w, decode_out.h, token_index, hidden_size);
     throw std::runtime_error(msg);
 }
+
+void disable_low_precision(ncnn::Option& opt) {
+    opt.use_bf16_storage = false;
+    opt.use_bf16_packed = false;
+    opt.use_fp16_packed = false;
+    opt.use_fp16_storage = false;
+    opt.use_fp16_arithmetic = false;
+    opt.use_fp16_uniform = false;
+    opt.use_int8_packed = false;
+    opt.use_int8_storage = false;
+    opt.use_int8_arithmetic = false;
+    opt.use_int8_uniform = false;
+}
+
+#if NCNN_VULKAN
+void configure_vulkan_net(ncnn::Net& net, ncnn::VulkanDevice* vkdev,
+                          ncnn::VkAllocator* blob_allocator, ncnn::VkAllocator* staging_allocator) {
+    net.set_vulkan_device(vkdev);
+    net.opt.use_vulkan_compute = true;
+    net.opt.blob_vkallocator = blob_allocator;
+    net.opt.workspace_vkallocator = blob_allocator;
+    net.opt.staging_vkallocator = staging_allocator;
+}
+#endif
 }  // namespace
 
-Engine::Engine(const std::string& model_path, int num_threads) {
+Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
+    const int num_threads = options.num_threads;
     if (num_threads <= 0) {
         throw std::invalid_argument("num_threads must be positive");
     }
+    if (options.vulkan_device < -1) {
+        throw std::invalid_argument("vulkan_device must be -1 (CPU) or a non-negative GPU index");
+    }
+    if (options.vulkan_device == -1 && options.vulkan_precision != VulkanPrecision::Fp32) {
+        throw std::invalid_argument(
+            "non-FP32 Vulkan precision requires a non-negative vulkan_device");
+    }
+#if !NCNN_VULKAN
+    if (options.vulkan_device >= 0) {
+        throw std::runtime_error("Vulkan was requested, but ncnn was built without NCNN_VULKAN");
+    }
+#endif
+    use_vulkan_ = options.vulkan_device >= 0;
+    vulkan_device_ = options.vulkan_device;
+    vulkan_precision_ = options.vulkan_precision;
 
     try {
+#if NCNN_VULKAN
+        if (use_vulkan_) {
+            if (ncnn::create_gpu_instance() != 0) {
+                throw std::runtime_error("failed to initialize ncnn Vulkan instance");
+            }
+            const int gpu_count = ncnn::get_gpu_count();
+            if (gpu_count <= 0) {
+                throw std::runtime_error("Vulkan was requested, but no GPU device is available");
+            }
+            if (vulkan_device_ >= gpu_count) {
+                throw std::invalid_argument("vulkan_device " + std::to_string(vulkan_device_) +
+                                            " is out of range; available device count is " +
+                                            std::to_string(gpu_count));
+            }
+            vkdev_ = ncnn::get_gpu_device(vulkan_device_);
+            if (!vkdev_ || !vkdev_->is_valid()) {
+                throw std::runtime_error("selected Vulkan device is invalid");
+            }
+            blob_vkallocator_ = vkdev_->acquire_blob_allocator();
+            staging_vkallocator_ = vkdev_->acquire_staging_allocator();
+            if (!blob_vkallocator_ || !staging_vkallocator_) {
+                throw std::runtime_error("failed to acquire Vulkan allocators");
+            }
+        }
+#endif
+
         json config;
         {
             std::ifstream ifs(model_path + "/model.json");
@@ -94,6 +164,39 @@ Engine::Engine(const std::string& model_path, int num_threads) {
         text_embed_net_->opt.num_threads = num_threads;
         text_decoder_net_->opt.num_threads = num_threads;
         lm_head_net_->opt.num_threads = num_threads;
+        disable_low_precision(vision_net_->opt);
+        disable_low_precision(text_decoder_net_->opt);
+        disable_low_precision(lm_head_net_->opt);
+
+#if NCNN_VULKAN
+        if (use_vulkan_) {
+            configure_vulkan_net(*vision_net_, vkdev_, blob_vkallocator_, staging_vkallocator_);
+            configure_vulkan_net(*text_decoder_net_, vkdev_, blob_vkallocator_,
+                                 staging_vkallocator_);
+            configure_vulkan_net(*lm_head_net_, vkdev_, blob_vkallocator_, staging_vkallocator_);
+
+            if (vulkan_precision_ == VulkanPrecision::Mixed) {
+                if (!vkdev_->info.support_fp16_storage()) {
+                    throw std::runtime_error(
+                        "mixed Vulkan precision requires FP16 storage support");
+                }
+
+                vision_net_->opt.use_fp16_packed = true;
+                vision_net_->opt.use_fp16_storage = true;
+                vision_net_->opt.use_fp16_arithmetic = false;
+                vision_storage_ = "fp16";
+
+                if (vkdev_->info.support_bf16_storage()) {
+                    text_decoder_net_->opt.use_bf16_storage = true;
+                    decoder_storage_ = "bf16";
+                } else {
+                    text_decoder_net_->opt.use_fp16_storage = true;
+                    text_decoder_net_->opt.use_fp16_arithmetic = false;
+                    decoder_storage_ = "fp16";
+                }
+            }
+        }
+#endif
         // The decoder SDPA graph relies on explicit [head_dim, seq, heads] cache
         // layout. ncnn packing folds heads into elempack and breaks SDPA masks/cache.
         text_decoder_net_->opt.use_packing_layout = false;
@@ -123,6 +226,14 @@ Engine::Engine(const std::string& model_path, int num_threads) {
             lm_head_net_->load_model(lm_head_bin.c_str()) != 0) {
             throw std::runtime_error("failed to load one or more ncnn param/bin files");
         }
+#if NCNN_VULKAN
+        if (use_vulkan_ &&
+            (!vision_net_->opt.use_vulkan_compute || !text_decoder_net_->opt.use_vulkan_compute ||
+             !lm_head_net_->opt.use_vulkan_compute)) {
+            throw std::runtime_error(
+                "one or more requested Vulkan networks fell back to CPU during load");
+        }
+#endif
         std::string type = "bpe";
         if (config["tokenizer"].contains("type")) {
             type = config["tokenizer"]["type"].get<std::string>();
@@ -209,9 +320,35 @@ Engine::Engine(const std::string& model_path, int num_threads) {
             vocabulary_size_ = config["setting"].value("vocab_size", (int)tokenizer_->vocab_size());
         }
     } catch (const std::exception& error) {
+#if NCNN_VULKAN
+        release_vulkan_resources();
+#endif
         throw std::runtime_error(std::string("failed to load HunyuanOCR model: ") + error.what());
     }
 }
+
+Engine::~Engine() {
+#if NCNN_VULKAN
+    release_vulkan_resources();
+#endif
+}
+
+#if NCNN_VULKAN
+void Engine::release_vulkan_resources() {
+    lm_head_net_.reset();
+    text_decoder_net_.reset();
+    vision_net_.reset();
+    if (vkdev_ && blob_vkallocator_) {
+        vkdev_->reclaim_blob_allocator(blob_vkallocator_);
+    }
+    if (vkdev_ && staging_vkallocator_) {
+        vkdev_->reclaim_staging_allocator(staging_vkallocator_);
+    }
+    blob_vkallocator_ = nullptr;
+    staging_vkallocator_ = nullptr;
+    vkdev_ = nullptr;
+}
+#endif
 
 ncnn::Mat Engine::run_vision(const ncnn::Mat& pixel_values) const {
     ncnn::Mat feats;
@@ -228,6 +365,12 @@ ncnn::Mat Engine::run_vision(const ncnn::Mat& pixel_values) const {
 std::shared_ptr<Context> Engine::prefill(const std::string& prompt_text,
                                          const ncnn::Mat& bgr_image) {
     Profile profile;
+    profile.backend = use_vulkan_ ? "vulkan" : "cpu";
+    profile.requested_precision = vulkan_precision_ == VulkanPrecision::Mixed ? "mixed" : "fp32";
+    profile.vision_storage = vision_storage_;
+    profile.decoder_storage = decoder_storage_;
+    profile.lm_head_storage = "fp32";
+    profile.vulkan_device = vulkan_device_;
     const auto total_begin = std::chrono::steady_clock::now();
 
     const auto preprocess_begin = std::chrono::steady_clock::now();
@@ -320,9 +463,22 @@ std::shared_ptr<Context> Engine::prefill(const std::string& prompt_text,
     }
 
     KvCache kv_cache;
+#if NCNN_VULKAN
+    VulkanKvCache vulkan_kv_cache;
+#endif
     const auto decoder_begin = std::chrono::steady_clock::now();
-    ncnn::Mat decode_out = llm_run_decoder_with_kv(*text_decoder_net_, token_embed, mask, cos_cache,
-                                                   sin_cache, kv_cache, attention_layers_, true);
+    ncnn::Mat decode_out;
+#if NCNN_VULKAN
+    if (use_vulkan_) {
+        decode_out =
+            llm_run_decoder_with_kv_vulkan(*text_decoder_net_, token_embed, mask, cos_cache,
+                                           sin_cache, vulkan_kv_cache, attention_layers_, true);
+    } else
+#endif
+    {
+        decode_out = llm_run_decoder_with_kv(*text_decoder_net_, token_embed, mask, cos_cache,
+                                             sin_cache, kv_cache, attention_layers_, true);
+    }
     const auto decoder_end = std::chrono::steady_clock::now();
     profile.decoder_seconds = elapsed_seconds(decoder_begin, decoder_end);
 
@@ -338,6 +494,10 @@ std::shared_ptr<Context> Engine::prefill(const std::string& prompt_text,
 
     auto ctx = std::make_shared<Context>();
     ctx->kv_cache = std::move(kv_cache);
+#if NCNN_VULKAN
+    ctx->vulkan_kv_cache = std::move(vulkan_kv_cache);
+#endif
+    ctx->use_vulkan = use_vulkan_;
     ctx->current_token = next_token_id;
     ctx->position = sequence_length;
     ctx->generated_tokens.push_back(next_token_id);
@@ -380,14 +540,24 @@ std::shared_ptr<Context> Engine::generate(const std::shared_ptr<Context>& input_
         ++ctx->position;
 
         // Mask [1, kv_len+1] all zeros: the new token attends to all cached positions + itself.
-        ncnn::Mat mask(1, ctx->kv_cache[0].first.h + 1);
+        ncnn::Mat mask(1, ctx->kv_length() + 1);
         mask.fill(0.0f);
 
-        ncnn::Mat decode_out =
-            llm_run_decoder_with_kv(*text_decoder_net_, cur_embed, mask, cos_cache, sin_cache,
-                                    ctx->kv_cache, attention_layers_, false);
-        ncnn::Mat lm_head_in = lm_head_input_from_decoder(decode_out, 0, hidden_size_);
-        ncnn::Mat logits = llm_run_lm_head(*lm_head_net_, lm_head_in);
+        ncnn::Mat logits;
+#if NCNN_VULKAN
+        if (use_vulkan_) {
+            logits = llm_run_decoder_lm_head_with_kv_vulkan(
+                *text_decoder_net_, *lm_head_net_, cur_embed, mask, cos_cache, sin_cache,
+                ctx->vulkan_kv_cache, attention_layers_);
+        } else
+#endif
+        {
+            ncnn::Mat decode_out =
+                llm_run_decoder_with_kv(*text_decoder_net_, cur_embed, mask, cos_cache, sin_cache,
+                                        ctx->kv_cache, attention_layers_, false);
+            ncnn::Mat lm_head_in = lm_head_input_from_decoder(decode_out, 0, hidden_size_);
+            logits = llm_run_lm_head(*lm_head_net_, lm_head_in);
+        }
 
         TokenSampleConfig sample_config;
         sample_config.vocabulary_size = vocabulary_size_;

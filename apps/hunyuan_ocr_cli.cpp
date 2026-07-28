@@ -16,6 +16,8 @@ struct Arguments {
     std::string json_output;
     int threads = 4;
     int max_new_tokens = 1024;
+    int vulkan_device = -1;
+    hunyuan_ocr::VulkanPrecision vulkan_precision = hunyuan_ocr::VulkanPrecision::Fp32;
     bool prefill_only = false;
     bool profile = false;
 };
@@ -23,6 +25,8 @@ struct Arguments {
 void print_usage(const char* executable) {
     std::fprintf(stderr,
                  "Usage: %s --image FILE [--model DIR] [--prompt TEXT] [--threads N] "
+                 "[--vulkan-device INDEX] "
+                 "[--vulkan-precision fp32|mixed] "
                  "[--max-new-tokens N] [--prefill-only] [--profile] [--json-output FILE]\n",
                  executable);
 }
@@ -48,6 +52,17 @@ Arguments parse_arguments(int argc, char** argv) {
             arguments.threads = std::stoi(require_value(argc, argv, index));
         } else if (option == "--max-new-tokens") {
             arguments.max_new_tokens = std::stoi(require_value(argc, argv, index));
+        } else if (option == "--vulkan-device") {
+            arguments.vulkan_device = std::stoi(require_value(argc, argv, index));
+        } else if (option == "--vulkan-precision") {
+            const std::string precision = require_value(argc, argv, index);
+            if (precision == "fp32") {
+                arguments.vulkan_precision = hunyuan_ocr::VulkanPrecision::Fp32;
+            } else if (precision == "mixed") {
+                arguments.vulkan_precision = hunyuan_ocr::VulkanPrecision::Mixed;
+            } else {
+                throw std::invalid_argument("--vulkan-precision must be fp32 or mixed");
+            }
         } else if (option == "--json-output") {
             arguments.json_output = require_value(argc, argv, index);
         } else if (option == "--prefill-only") {
@@ -67,11 +82,25 @@ Arguments parse_arguments(int argc, char** argv) {
     if (arguments.threads <= 0 || arguments.max_new_tokens <= 0) {
         throw std::invalid_argument("threads and max-new-tokens must be positive");
     }
+    if (arguments.vulkan_device < -1) {
+        throw std::invalid_argument("vulkan-device must be -1 (CPU) or a non-negative GPU index");
+    }
+    if (arguments.vulkan_device == -1 &&
+        arguments.vulkan_precision != hunyuan_ocr::VulkanPrecision::Fp32) {
+        throw std::invalid_argument(
+            "--vulkan-precision mixed requires a non-negative --vulkan-device");
+    }
     return arguments;
 }
 
 json profile_json(const hunyuan_ocr::Profile& profile) {
     return {
+        {"backend", profile.backend},
+        {"requested_precision", profile.requested_precision},
+        {"vision_storage", profile.vision_storage},
+        {"decoder_storage", profile.decoder_storage},
+        {"lm_head_storage", profile.lm_head_storage},
+        {"vulkan_device", profile.vulkan_device >= 0 ? json(profile.vulkan_device) : json(nullptr)},
         {"preprocess_seconds", profile.preprocess_seconds},
         {"vision_seconds", profile.vision_seconds},
         {"tokenize_seconds", profile.tokenize_seconds},
@@ -91,6 +120,12 @@ json profile_json(const hunyuan_ocr::Profile& profile) {
 
 void print_profile(const hunyuan_ocr::Profile& profile) {
     std::fprintf(stderr,
+                 "backend=%s precision=%s vision_storage=%s decoder_storage=%s "
+                 "lm_head_storage=%s vulkan_device=%d\n",
+                 profile.backend.c_str(), profile.requested_precision.c_str(),
+                 profile.vision_storage.c_str(), profile.decoder_storage.c_str(),
+                 profile.lm_head_storage.c_str(), profile.vulkan_device);
+    std::fprintf(stderr,
                  "preprocess=%.3fs vision=%.3fs tokenize=%.3fs text_embed=%.3fs rope=%.3fs "
                  "decoder=%.3fs lm_head=%.3fs total=%.3fs image=%dx%d grid=%dx%d "
                  "vision_tokens=%d seq_len=%d\n",
@@ -108,6 +143,11 @@ void write_json(const std::string& path, const Arguments& arguments,
         {"image", arguments.image_path},
         {"prompt", arguments.prompt},
         {"threads", arguments.threads},
+        {"backend", arguments.vulkan_device >= 0 ? "vulkan" : "cpu"},
+        {"vulkan_device",
+         arguments.vulkan_device >= 0 ? json(arguments.vulkan_device) : json(nullptr)},
+        {"vulkan_precision",
+         arguments.vulkan_precision == hunyuan_ocr::VulkanPrecision::Mixed ? "mixed" : "fp32"},
         {"max_new_tokens", arguments.max_new_tokens},
         {"prefill_only", arguments.prefill_only},
         {"profile", profile_json(result.profile)},
@@ -127,8 +167,11 @@ void write_json(const std::string& path, const Arguments& arguments,
 int main(int argc, char** argv) {
     try {
         const Arguments arguments = parse_arguments(argc, argv);
-        hunyuan_ocr::Runtime runtime(arguments.model_directory,
-                                     hunyuan_ocr::RuntimeOptions{arguments.threads});
+        hunyuan_ocr::RuntimeOptions runtime_options;
+        runtime_options.num_threads = arguments.threads;
+        runtime_options.vulkan_device = arguments.vulkan_device;
+        runtime_options.vulkan_precision = arguments.vulkan_precision;
+        hunyuan_ocr::Runtime runtime(arguments.model_directory, runtime_options);
 
         hunyuan_ocr::Result result;
         if (arguments.prefill_only) {

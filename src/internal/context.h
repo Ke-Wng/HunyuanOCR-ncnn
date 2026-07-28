@@ -1,6 +1,9 @@
 #pragma once
 
 #include <mat.h>
+#if NCNN_VULKAN
+#include <gpu.h>
+#endif
 
 #include <memory>
 #include <utility>
@@ -9,11 +12,18 @@
 namespace hunyuan_ocr::internal {
 
 using KvCache = std::vector<std::pair<ncnn::Mat, ncnn::Mat>>;
+#if NCNN_VULKAN
+using VulkanKvCache = std::vector<std::pair<ncnn::VkMat, ncnn::VkMat>>;
+#endif
 
 struct Context {
     std::shared_ptr<Context> clone() const {
         auto copy = std::make_shared<Context>();
         copy->kv_cache = kv_cache;
+#if NCNN_VULKAN
+        copy->vulkan_kv_cache = vulkan_kv_cache;
+#endif
+        copy->use_vulkan = use_vulkan;
         copy->current_token = current_token;
         copy->position = position;
         copy->stop_token = stop_token;
@@ -21,7 +31,20 @@ struct Context {
         return copy;
     }
 
+    int kv_length() const {
+#if NCNN_VULKAN
+        if (use_vulkan) {
+            return vulkan_kv_cache.empty() ? 0 : vulkan_kv_cache[0].first.h;
+        }
+#endif
+        return kv_cache.empty() ? 0 : kv_cache[0].first.h;
+    }
+
     KvCache kv_cache;
+#if NCNN_VULKAN
+    VulkanKvCache vulkan_kv_cache;
+#endif
+    bool use_vulkan = false;
     int current_token = 0;
     int position = 0;
     int stop_token = -1;

@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "hunyuan_ocr/runtime.h"
 #include "internal/image_preprocessor.h"
 #include "internal/text_runtime.h"
 #include "internal/xdrope.h"
@@ -122,6 +123,14 @@ void test_hunyuan_image_preprocessor() {
     require_close(output.pixel_values.channel(2).row(0)[0], 10.0f / 255.0f, 1e-6f, "blue channel");
 }
 
+void test_runtime_option_defaults() {
+    const hunyuan_ocr::RuntimeOptions options;
+    require_true(options.num_threads == 4, "default runtime thread count");
+    require_true(options.vulkan_device == -1, "CPU must remain the default backend");
+    require_true(options.vulkan_precision == hunyuan_ocr::VulkanPrecision::Fp32,
+                 "Vulkan FP32 must remain the default precision");
+}
+
 }  // namespace
 
 int main() {
@@ -129,6 +138,7 @@ int main() {
     test_sampling_argmax_with_repetition_penalty();
     test_batch_mat_layout();
     test_hunyuan_image_preprocessor();
+    test_runtime_option_defaults();
     std::printf("runtime core tests passed\n");
     return 0;
 }

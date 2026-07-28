@@ -8,6 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 ASSETS = ROOT / "assets" / "hunyuan_ocr"
 MANIFEST = ROOT / "tests" / "data" / "e2e_samples.json"
+BUILD_DIR = Path(os.environ.get("HUNYUAN_OCR_BUILD_DIR", ROOT / "build"))
 
 
 pytestmark = [
@@ -16,7 +17,7 @@ pytestmark = [
         reason="set HUNYUAN_OCR_RUN_E2E=1 to run heavy end-to-end OCR regression",
     ),
     pytest.mark.skipif(not ASSETS.exists(), reason="exported assets not present"),
-    pytest.mark.skipif(not (ROOT / "build" / "hunyuan-ocr").exists(), reason="CLI is not built"),
+    pytest.mark.skipif(not (BUILD_DIR / "hunyuan-ocr").exists(), reason="CLI is not built"),
 ]
 
 
@@ -95,22 +96,33 @@ def test_e2e_fixed_sample(sample: dict, tmp_path: Path):
     image_path = materialize_image(tmp_path, sample)
     report_path = tmp_path / f"{sample['id']}.report.json"
 
+    command = [
+        str(BUILD_DIR / "hunyuan-ocr"),
+        "--model",
+        str(ASSETS),
+        "--image",
+        str(image_path),
+        "--prompt",
+        sample["prompt"],
+        "--threads",
+        str(sample["threads"]),
+        "--max-new-tokens",
+        str(sample["max_new_tokens"]),
+        "--json-output",
+        str(report_path),
+    ]
+    if os.environ.get("HUNYUAN_OCR_RUN_VULKAN") == "1":
+        command.extend(
+            [
+                "--vulkan-device",
+                os.environ.get("HUNYUAN_OCR_VULKAN_DEVICE", "0"),
+                "--vulkan-precision",
+                os.environ.get("HUNYUAN_OCR_VULKAN_PRECISION", "fp32"),
+            ]
+        )
+
     subprocess.run(
-        [
-            str(ROOT / "build" / "hunyuan-ocr"),
-            "--model",
-            str(ASSETS),
-            "--image",
-            str(image_path),
-            "--prompt",
-            sample["prompt"],
-            "--threads",
-            str(sample["threads"]),
-            "--max-new-tokens",
-            str(sample["max_new_tokens"]),
-            "--json-output",
-            str(report_path),
-        ],
+        command,
         cwd=ROOT,
         check=True,
         timeout=int(os.environ.get("HUNYUAN_OCR_E2E_TIMEOUT", "600")),

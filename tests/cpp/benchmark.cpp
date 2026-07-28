@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -18,6 +19,12 @@ std::string option(int argc, char** argv, const std::string& name, const std::st
 
 json profile_json(const hunyuan_ocr::Profile& profile) {
     return {
+        {"backend", profile.backend},
+        {"requested_precision", profile.requested_precision},
+        {"vision_storage", profile.vision_storage},
+        {"decoder_storage", profile.decoder_storage},
+        {"lm_head_storage", profile.lm_head_storage},
+        {"vulkan_device", profile.vulkan_device >= 0 ? json(profile.vulkan_device) : json(nullptr)},
         {"preprocess_seconds", profile.preprocess_seconds},
         {"vision_seconds", profile.vision_seconds},
         {"tokenize_seconds", profile.tokenize_seconds},
@@ -45,23 +52,54 @@ int main(int argc, char** argv) {
         const int threads = std::stoi(option(argc, argv, "--threads", "1"));
         const int warmup = std::stoi(option(argc, argv, "--warmup", "1"));
         const int repeats = std::stoi(option(argc, argv, "--repeats", "1"));
+        const int vulkan_device = std::stoi(option(argc, argv, "--vulkan-device", "-1"));
+        const bool use_vulkan = vulkan_device >= 0;
+        const std::string precision = option(argc, argv, "--vulkan-precision", "fp32");
+        const int max_new_tokens = std::stoi(option(argc, argv, "--max-new-tokens", "0"));
         const std::string output_path = option(argc, argv, "--output", "benchmark.json");
-        if (image.empty() || threads <= 0 || warmup < 0 || repeats <= 0) {
+        if (image.empty() || threads <= 0 || warmup < 0 || repeats <= 0 || vulkan_device < -1 ||
+            max_new_tokens < 0 || (precision != "fp32" && precision != "mixed")) {
             throw std::invalid_argument("invalid benchmark arguments");
         }
+        if (!use_vulkan && precision != "fp32") {
+            throw std::invalid_argument("mixed precision requires a non-negative Vulkan device");
+        }
+
+        hunyuan_ocr::RuntimeOptions runtime_options;
+        runtime_options.num_threads = threads;
+        runtime_options.vulkan_device = vulkan_device;
+        runtime_options.vulkan_precision = precision == "mixed"
+                                               ? hunyuan_ocr::VulkanPrecision::Mixed
+                                               : hunyuan_ocr::VulkanPrecision::Fp32;
+        hunyuan_ocr::GenerationOptions generation_options;
+        generation_options.max_new_tokens = std::max(1, max_new_tokens);
+
+        const auto run_once = [&](hunyuan_ocr::Runtime& runtime) {
+            if (max_new_tokens == 0) return runtime.prefill(image, prompt);
+            return runtime.recognize(image, prompt, generation_options);
+        };
 
         const auto load_begin = std::chrono::steady_clock::now();
-        hunyuan_ocr::Runtime runtime(model, hunyuan_ocr::RuntimeOptions{threads});
+        hunyuan_ocr::Runtime runtime(model, runtime_options);
         const auto load_end = std::chrono::steady_clock::now();
-        for (int index = 0; index < warmup; ++index) runtime.prefill(image, prompt);
+        for (int index = 0; index < warmup; ++index) run_once(runtime);
 
         json samples = json::array();
         for (int index = 0; index < repeats; ++index) {
             const auto begin = std::chrono::steady_clock::now();
-            const auto result = runtime.prefill(image, prompt);
+            const auto result = run_once(runtime);
             const auto end = std::chrono::steady_clock::now();
             json sample = profile_json(result.profile);
-            sample["wall_seconds"] = std::chrono::duration<double>(end - begin).count();
+            const double wall_seconds = std::chrono::duration<double>(end - begin).count();
+            const double generation_seconds =
+                max_new_tokens > 0 ? std::max(0.0, wall_seconds - result.profile.total_seconds)
+                                   : 0.0;
+            sample["wall_seconds"] = wall_seconds;
+            sample["generation_seconds"] = generation_seconds;
+            sample["generated_tokens"] = result.token_ids.size();
+            sample["tokens_per_second"] = max_new_tokens > 0 && generation_seconds > 0.0
+                                              ? result.token_ids.size() / generation_seconds
+                                              : 0.0;
             samples.push_back(std::move(sample));
         }
 
@@ -70,6 +108,10 @@ int main(int argc, char** argv) {
             {"image", image},
             {"prompt", prompt},
             {"threads", threads},
+            {"backend", use_vulkan ? "vulkan" : "cpu"},
+            {"vulkan_device", use_vulkan ? json(vulkan_device) : json(nullptr)},
+            {"vulkan_precision", precision},
+            {"max_new_tokens", max_new_tokens},
             {"warmup", warmup},
             {"repeats", repeats},
             {"load_seconds", std::chrono::duration<double>(load_end - load_begin).count()},

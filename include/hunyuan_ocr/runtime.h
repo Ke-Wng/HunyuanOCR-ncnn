@@ -7,8 +7,15 @@
 
 namespace hunyuan_ocr {
 
+enum class VulkanPrecision {
+    Fp32,
+    Mixed,
+};
+
 struct RuntimeOptions {
     int num_threads = 4;
+    int vulkan_device = -1;
+    VulkanPrecision vulkan_precision = VulkanPrecision::Fp32;
 };
 
 struct GenerationOptions {
@@ -21,6 +28,12 @@ struct GenerationOptions {
 };
 
 struct Profile {
+    std::string backend = "cpu";
+    std::string requested_precision = "fp32";
+    std::string vision_storage = "fp32";
+    std::string decoder_storage = "fp32";
+    std::string lm_head_storage = "fp32";
+    int vulkan_device = -1;
     double preprocess_seconds = 0.0;
     double vision_seconds = 0.0;
     double tokenize_seconds = 0.0;

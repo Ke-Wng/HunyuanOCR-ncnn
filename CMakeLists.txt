@@ -18,7 +18,6 @@ else()
             "git submodule update --init --recursive"
         )
     endif()
-    set(NCNN_VULKAN OFF CACHE BOOL "" FORCE)
     set(NCNN_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
     set(NCNN_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(NCNN_BUILD_BENCHMARK OFF CACHE BOOL "" FORCE)

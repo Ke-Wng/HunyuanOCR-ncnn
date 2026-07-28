@@ -1,7 +1,7 @@
 # HunyuanOCR-ncnn 技术报告
 
-> 将 HunyuanOCR 的图像理解与自回归文本生成链路完整部署到 ncnn，构建一个 CPU FP32、
-> 支持可变尺寸图像、可从 C++ 直接调用的 OCR 运行时。
+> 将 HunyuanOCR 的图像理解与自回归文本生成链路完整部署到 ncnn，构建一个默认 CPU
+> FP32、可选 Vulkan FP32/Mixed、支持可变尺寸图像且可从 C++ 直接调用的 OCR 运行时。
 
 ---
 
@@ -14,7 +14,8 @@ HunyuanOCR 是一个视觉语言模型（VLM）：输入一张图片和一段中
 本项目的目标，是把这条“图像理解 + 自回归生成”的链路完整搬到 [ncnn](https://github.com/Tencent/ncnn)
 这一面向端侧、针对 CPU 优化的推理框架上，提供一个满足以下条件的运行时：
 
-- **纯 CPU、纯 FP32**，不依赖显卡；
+- **CPU FP32 默认可用**，不依赖显卡；
+- **可选 Vulkan GPU 加速**，支持严格 FP32 和显式 Mixed 两种精度；
 - **支持可变尺寸图像**，无需为不同长宽比单独准备模型；
 - **可从 C++ 直接调用**，在线推理不需要 Python 参与。
 
@@ -150,6 +151,66 @@ ncnn 默认开启一项名为 **packing** 的加速：它把数据沿元素维�
 模型加载时会严格检查 `model_type`、`model_format`、动态视觉 backend、KV Cache 配置以及必要文件是否齐备；
 CLI 对未知参数、缺失参数和非法数值均返回明确的错误码。
 
+### 3.7 Vulkan 数据流与精度
+
+Vulkan 模式将计算量最大的 Vision、Text Decoder 和 LM Head 放到同一 GPU；
+Text Embed 继续使用 CPU，因为当前 ncnn 没有 `Embed` 的 Vulkan 实现。Decoder
+产生的 24 层 K/V Cache 使用 `VkMat` 常驻显存，逐 token 解码时不会把 48 份
+Cache 下载再上传。Decoder 输出直接作为 GPU LM Head 输入，一个 token 只提交一次
+Vulkan command，最后下载 logits 给 CPU 采样。
+
+整体数据流如下：
+
+```text
+Prefill（处理图片和提示词、建立 KV Cache）
+
+[CPU] 图片预处理
+          |
+          | 上传 pixels
+          v
+[GPU] Vision
+          |
+          | 下载视觉特征
+          v
+[CPU] Text Embed + 注入视觉特征 + 构造 Mask / xdRoPE
+          |
+          | 上传图文 embedding、Mask、xdRoPE
+          v
+[GPU] Decoder Prefill
+          |
+          +--------------------> [GPU] 24 层 KV Cache
+                                      48 个 VkMat 常驻显存
+
+
+逐 token 生成循环
+
+[CPU] 当前 token -> Text Embed + Mask + xdRoPE
+          |
+          | 上传小尺寸输入
+          v
+[GPU] Text Decoder <------ 读取 ------ [GPU] KV Cache（48 个 VkMat）
+          |                                      ^
+          +--------------- 更新 -----------------+
+          |
+          | hidden state 不下载
+          v
+[GPU] Mixed 时转 FP32 -> LM Head
+          |
+          | 只下载 logits
+          v
+[CPU] 采样 -> 选择下一个 token -> 返回循环起点
+```
+
+逐 token 阶段跨越 CPU/GPU 边界的只有单 token embedding、Mask、xdRoPE
+等小尺寸输入，以及最终 logits。48 份 K/V Cache 和 Decoder hidden state
+都不离开显存。Decoder、Cache 更新、Mixed 精度转换和 LM Head 被记录到同一个
+Vulkan command 中，成功执行后才用新 Cache 替换旧 Cache。
+
+FP32 是 Vulkan 默认精度，并显式关闭 ncnn 默认的 FP16/BF16 storage 与 arithmetic。
+Mixed 必须由调用者显式选择：Vision 使用 FP16 storage 和 FP32 accumulation；
+Decoder/KV Cache 优先使用 BF16 storage，不支持时使用 FP16 storage 和 FP32
+accumulation；LM Head 保持 FP32，Decoder hidden state 在 GPU 上转换后再输入。
+
 ---
 
 ## 4. 正确性验证
@@ -200,6 +261,23 @@ warmup 1 次、测量 1 次：
 python -m tools.validation.benchmark --threads 1 2 4 8 --warmup 1 --repeats 1
 ```
 
+Vulkan 实现在 RTX 4090 上使用同一张字幕图、4 线程、8 个生成 token 复测。这里的
+`prefill` 是 Profile 内的预填充计算时间，生成吞吐只统计预填充完成后的逐 token 阶段：
+
+| 后端 | 实际 storage（Vision / Decoder / LM Head） | prefill | 生成吞吐 | 峰值显存 |
+|---|---|---:|---:|---:|
+| CPU FP32 | FP32 / FP32 / FP32 | 7.213 s | 8.20 token/s | — |
+| Vulkan FP32 | FP32 / FP32 / FP32 | 2.140 s | 20.56 token/s | 4437 MiB |
+| Vulkan Mixed | FP16 / FP16 / FP32 | 2.077 s | 21.22 token/s | 2521 MiB |
+
+本机驱动不支持 BF16 storage，因此 Mixed Decoder 自动使用 FP16 storage。相对 CPU，
+Vulkan FP32 的本次预填充加速为 `3.37x`、生成吞吐为 `2.51x`；Mixed 将峰值显存再降低
+约 `43.2%`。由于 pipeline 首次创建与驱动缓存会显著影响模型加载耗时，表中不比较加载时间。
+
+GPU 与 CPU 的首 token 一致，Vulkan FP32 与 Mixed 的 8-token 贪心序列一致；CPU 后续序列
+在一个空格 token 上发生分支，属于不同后端浮点归约造成的贪心边界差异。固定 E2E golden
+在 CPU、Vulkan FP32 和 Vulkan Mixed 三种模式下均通过。
+
 优化后，LM Head 的耗时已趋近于零，整体时间主要落在视觉编码与文本 Decoder 上。由于视觉注意力
 的计算量随图像 token 数呈平方增长，图片的像素上限是最主要的部署调节参数：调低可进一步提速，
 代价是牺牲部分细节分辨能力。
@@ -211,7 +289,6 @@ python -m tools.validation.benchmark --threads 1 2 4 8 --warmup 1 --repeats 1
 当前实现已跑通端到端链路并完成数值对齐，接下来仍有若干值得推进的方向:
 
 - **数值精度**：评估 pnnx `fp16=1` 半精度导出与 ncnn 量化，在可接受的精度损失内进一步压缩体积、提升速度；
-- **异构后端**：引入 Vulkan / GPU 后端，让有显卡的环境获得额外加速；
 - **调参**：继续调优图片像素上限（`min_pixels` / `max_pixels`）与运行时网格策略，在速度与识别精度间取得更好平衡；
 - **解码提速**：完整生成的主要瓶颈是 24 层文本 Decoder 的逐 token CPU 推理；可借鉴 HunyuanOCR v1.5 的
   **DFlash 投机解码**等思路，一次推进多个 token 以摊薄单步开销。

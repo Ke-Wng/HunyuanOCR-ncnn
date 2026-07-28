@@ -2,6 +2,9 @@
 
 #include <mat.h>
 #include <net.h>
+#if NCNN_VULKAN
+#include <gpu.h>
+#endif
 
 #include <functional>
 #include <memory>
@@ -18,7 +21,8 @@ namespace hunyuan_ocr::internal {
 
 class Engine {
    public:
-    Engine(const std::string& model_directory, int num_threads);
+    Engine(const std::string& model_directory, const RuntimeOptions& options);
+    ~Engine();
 
     std::shared_ptr<Context> prefill(const std::string& prompt, const ncnn::Mat& image);
     std::shared_ptr<Context> generate(const std::shared_ptr<Context>& context,
@@ -28,6 +32,9 @@ class Engine {
 
    private:
     ncnn::Mat run_vision(const ncnn::Mat& pixel_values) const;
+#if NCNN_VULKAN
+    void release_vulkan_resources();
+#endif
 
     std::shared_ptr<ncnn::Net> vision_net_;
     std::shared_ptr<ncnn::Net> text_embed_net_;
@@ -53,6 +60,16 @@ class Engine {
     int image_token_id_ = 120120;
     int spatial_merge_size_ = 2;
     int vocabulary_size_ = 120818;
+    bool use_vulkan_ = false;
+    int vulkan_device_ = -1;
+    VulkanPrecision vulkan_precision_ = VulkanPrecision::Fp32;
+    std::string vision_storage_ = "fp32";
+    std::string decoder_storage_ = "fp32";
+#if NCNN_VULKAN
+    ncnn::VulkanDevice* vkdev_ = nullptr;
+    ncnn::VkAllocator* blob_vkallocator_ = nullptr;
+    ncnn::VkAllocator* staging_vkallocator_ = nullptr;
+#endif
     Profile profile_;
 };
 

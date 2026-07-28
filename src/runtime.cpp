@@ -26,7 +26,7 @@ Result make_result(const std::shared_ptr<internal::Context>& context, const Prof
 class Runtime::Impl {
    public:
     Impl(const std::string& model_directory, const RuntimeOptions& options)
-        : engine(model_directory, options.num_threads) {}
+        : engine(model_directory, options) {}
 
     internal::Engine engine;
 };
