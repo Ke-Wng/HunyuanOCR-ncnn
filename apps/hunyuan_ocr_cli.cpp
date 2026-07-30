@@ -17,9 +17,11 @@ struct Arguments {
     int threads = 4;
     int max_new_tokens = 1024;
     int vulkan_device = -1;
+    float repetition_penalty = 1.03F;
     hunyuan_ocr::VulkanPrecision vulkan_precision = hunyuan_ocr::VulkanPrecision::Fp32;
     bool prefill_only = false;
     bool profile = false;
+    bool dflash = false;
 };
 
 void print_usage(const char* executable) {
@@ -27,7 +29,9 @@ void print_usage(const char* executable) {
                  "Usage: %s --image FILE [--model DIR] [--prompt TEXT] [--threads N] "
                  "[--vulkan-device INDEX] "
                  "[--vulkan-precision fp32|mixed] "
-                 "[--max-new-tokens N] [--prefill-only] [--profile] [--json-output FILE]\n",
+                 "[--max-new-tokens N] [--repetition-penalty P] [--dflash] [--prefill-only] "
+                 "[--profile] "
+                 "[--json-output FILE]\n",
                  executable);
 }
 
@@ -52,6 +56,8 @@ Arguments parse_arguments(int argc, char** argv) {
             arguments.threads = std::stoi(require_value(argc, argv, index));
         } else if (option == "--max-new-tokens") {
             arguments.max_new_tokens = std::stoi(require_value(argc, argv, index));
+        } else if (option == "--repetition-penalty") {
+            arguments.repetition_penalty = std::stof(require_value(argc, argv, index));
         } else if (option == "--vulkan-device") {
             arguments.vulkan_device = std::stoi(require_value(argc, argv, index));
         } else if (option == "--vulkan-precision") {
@@ -69,6 +75,8 @@ Arguments parse_arguments(int argc, char** argv) {
             arguments.prefill_only = true;
         } else if (option == "--profile") {
             arguments.profile = true;
+        } else if (option == "--dflash") {
+            arguments.dflash = true;
         } else if (option == "--help" || option == "-h") {
             print_usage(argv[0]);
             std::exit(0);
@@ -99,6 +107,7 @@ json profile_json(const hunyuan_ocr::Profile& profile) {
         {"requested_precision", profile.requested_precision},
         {"vision_storage", profile.vision_storage},
         {"decoder_storage", profile.decoder_storage},
+        {"dflash_storage", profile.dflash_storage},
         {"lm_head_storage", profile.lm_head_storage},
         {"vulkan_device", profile.vulkan_device >= 0 ? json(profile.vulkan_device) : json(nullptr)},
         {"preprocess_seconds", profile.preprocess_seconds},
@@ -108,6 +117,11 @@ json profile_json(const hunyuan_ocr::Profile& profile) {
         {"rope_seconds", profile.rope_seconds},
         {"decoder_seconds", profile.decoder_seconds},
         {"lm_head_seconds", profile.lm_head_seconds},
+        {"dflash_seconds", profile.dflash_seconds},
+        {"verification_seconds", profile.verification_seconds},
+        {"dflash_blocks", profile.dflash_blocks},
+        {"dflash_accepted_tokens", profile.dflash_accepted_tokens},
+        {"dflash_drafted_tokens", profile.dflash_drafted_tokens},
         {"total_seconds", profile.total_seconds},
         {"target_w", profile.target_width},
         {"target_h", profile.target_height},
@@ -121,19 +135,23 @@ json profile_json(const hunyuan_ocr::Profile& profile) {
 void print_profile(const hunyuan_ocr::Profile& profile) {
     std::fprintf(stderr,
                  "backend=%s precision=%s vision_storage=%s decoder_storage=%s "
-                 "lm_head_storage=%s vulkan_device=%d\n",
+                 "dflash_storage=%s lm_head_storage=%s vulkan_device=%d\n",
                  profile.backend.c_str(), profile.requested_precision.c_str(),
                  profile.vision_storage.c_str(), profile.decoder_storage.c_str(),
-                 profile.lm_head_storage.c_str(), profile.vulkan_device);
+                 profile.dflash_storage.c_str(), profile.lm_head_storage.c_str(),
+                 profile.vulkan_device);
     std::fprintf(stderr,
                  "preprocess=%.3fs vision=%.3fs tokenize=%.3fs text_embed=%.3fs rope=%.3fs "
                  "decoder=%.3fs lm_head=%.3fs total=%.3fs image=%dx%d grid=%dx%d "
-                 "vision_tokens=%d seq_len=%d\n",
+                 "vision_tokens=%d seq_len=%d dflash=%.3fs verify=%.3fs "
+                 "dflash_blocks=%d accepted=%d drafted=%d\n",
                  profile.preprocess_seconds, profile.vision_seconds, profile.tokenize_seconds,
                  profile.text_embed_seconds, profile.rope_seconds, profile.decoder_seconds,
                  profile.lm_head_seconds, profile.total_seconds, profile.target_width,
                  profile.target_height, profile.grid_width, profile.grid_height,
-                 profile.vision_tokens, profile.sequence_length);
+                 profile.vision_tokens, profile.sequence_length, profile.dflash_seconds,
+                 profile.verification_seconds, profile.dflash_blocks,
+                 profile.dflash_accepted_tokens, profile.dflash_drafted_tokens);
 }
 
 void write_json(const std::string& path, const Arguments& arguments,
@@ -149,7 +167,9 @@ void write_json(const std::string& path, const Arguments& arguments,
         {"vulkan_precision",
          arguments.vulkan_precision == hunyuan_ocr::VulkanPrecision::Mixed ? "mixed" : "fp32"},
         {"max_new_tokens", arguments.max_new_tokens},
+        {"repetition_penalty", arguments.repetition_penalty},
         {"prefill_only", arguments.prefill_only},
+        {"dflash", arguments.dflash},
         {"profile", profile_json(result.profile)},
         {"generated_text", result.text},
         {"generated_token_ids", result.token_ids},
@@ -171,6 +191,7 @@ int main(int argc, char** argv) {
         runtime_options.num_threads = arguments.threads;
         runtime_options.vulkan_device = arguments.vulkan_device;
         runtime_options.vulkan_precision = arguments.vulkan_precision;
+        runtime_options.enable_dflash = arguments.dflash;
         hunyuan_ocr::Runtime runtime(arguments.model_directory, runtime_options);
 
         hunyuan_ocr::Result result;
@@ -179,6 +200,7 @@ int main(int argc, char** argv) {
         } else {
             hunyuan_ocr::GenerationOptions generation;
             generation.max_new_tokens = arguments.max_new_tokens;
+            generation.repetition_penalty = arguments.repetition_penalty;
             result = runtime.recognize(arguments.image_path, arguments.prompt, generation,
                                        [](const std::string& fragment) {
                                            std::fwrite(fragment.data(), 1, fragment.size(), stdout);

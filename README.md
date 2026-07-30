@@ -1,6 +1,9 @@
 # HunyuanOCR-ncnn
 
-HunyuanOCR-ncnn 是 [Tencent-Hunyuan/HunyuanOCR](https://github.com/Tencent-Hunyuan/HunyuanOCR) 的 ncnn CPU FP32 推理实现，覆盖从可变尺寸图像预处理、视觉编码、图文 token 拼接、xdRoPE 到带 KV Cache 的文本解码的完整链路，并交付命令行程序 `hunyuan-ocr` 与可安装的 C++17 静态库。
+HunyuanOCR-ncnn 是 [Tencent-Hunyuan/HunyuanOCR](https://github.com/Tencent-Hunyuan/HunyuanOCR)
+v1.5 的 ncnn 推理实现，支持 CPU FP32、Vulkan FP32/Mixed 与 DFlash 贪心解码。
+项目覆盖从可变尺寸图像预处理、视觉编码、图文 token 拼接、xdRoPE 到带 KV Cache
+的文本解码完整链路，并交付命令行程序 `hunyuan-ocr` 与可安装的 C++17 静态库。
 
 设计原理、验证方法与性能数据见 [docs/report.md](docs/report.md)。
 
@@ -51,11 +54,14 @@ cmake -S . -B build \
 python -m venv .venv
 .venv/bin/pip install -r requirements/export.txt
 .venv/bin/python -m tools.export.export_hunyuan_ocr \
-  --model-path /path/to/HunyuanOCR/v1.0 \
+  --model-path /path/to/HunyuanOCR \
+  --dflash \
   --out assets/hunyuan_ocr
 ```
 
-`--model-path` 为可选项；省略时会自动从 Hugging Face Hub 复用缓存或下载模型。
+- 仅支持 HunyuanOCR v1.5 模型根目录。
+- `--dflash` 同时导出官方 `dflash/` draft 模型；省略时生成仅支持 AR 的模型包。
+- `--model-path` 为可选项；省略时会自动复用 Hugging Face 缓存或下载模型。
 
 ## 运行
 
@@ -82,10 +88,19 @@ python -m venv .venv
   --profile
 ```
 
-`--vulkan-precision mixed` 会让 Vision 使用 FP16 storage、Decoder/KV Cache
-优先使用 BF16 storage（不支持时使用 FP16），而 LM Head 保持 FP32。Mixed
-必须显式启用；`--vulkan-device -1` 表示 CPU，非负编号表示对应的 Vulkan
-设备，Vulkan 默认精度仍为 FP32。
+对模型包显式启用 DFlash 贪心解码：
+
+```bash
+./build-vulkan/hunyuan-ocr \
+  --model assets/hunyuan_ocr \
+  --image tests/data/reference_images/subtitle_movie.jpg \
+  --vulkan-device 0 \
+  --dflash
+```
+
+DFlash 当前只接受贪心配置，支持 CPU FP32、Vulkan FP32 和 Vulkan Mixed。
+
+`--vulkan-precision mixed` 会让 Vision 使用 FP16 storage、Decoder/KV Cache 优先使用 BF16 storage（不支持时使用 FP16），而对低精度敏感的 DFlash Draft 和 LM Head 保持 FP32。
 
 只测试 prefill 并输出结构化结果：
 

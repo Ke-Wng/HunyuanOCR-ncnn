@@ -73,6 +73,29 @@ VulkanKvCache extract_vulkan_caches(ncnn::Extractor& ex, ncnn::VkCompute& cmd, i
     }
     return next_cache;
 }
+
+void input_dflash_vulkan(ncnn::Extractor& ex, const ncnn::Mat& noise_embeddings,
+                         const ncnn::Mat& target_features, const ncnn::Mat& mask,
+                         const ncnn::Mat& cosine, const ncnn::Mat& sine, const VulkanKvCache& cache,
+                         int attention_layers, bool prefill) {
+    if (ex.input("in0", noise_embeddings) != 0 || ex.input("in1", target_features) != 0 ||
+        ex.input("in2", mask) != 0 || ex.input("in3", cosine) != 0 || ex.input("in4", sine) != 0) {
+        throw std::runtime_error("DFlash failed to set Vulkan graph inputs");
+    }
+    if (!prefill && static_cast<int>(cache.size()) < attention_layers) {
+        throw std::runtime_error("DFlash Vulkan kv_cache is smaller than attention layer count");
+    }
+    for (int i = 0; i < attention_layers; ++i) {
+        const std::string key = "cache_k" + std::to_string(i);
+        const std::string value = "cache_v" + std::to_string(i);
+        ncnn::VkMat empty;
+        const ncnn::VkMat& key_input = prefill ? empty : cache[i].first;
+        const ncnn::VkMat& value_input = prefill ? empty : cache[i].second;
+        if (ex.input(key.c_str(), key_input) != 0 || ex.input(value.c_str(), value_input) != 0) {
+            throw std::runtime_error("DFlash failed to input Vulkan cache");
+        }
+    }
+}
 #endif
 
 }  // namespace
@@ -106,7 +129,7 @@ ncnn::Mat llm_run_text_embed(ncnn::Net& embed_net, int token_id) {
 ncnn::Mat llm_run_decoder_with_kv(ncnn::Net& decoder_net, const ncnn::Mat& embeds,
                                   const ncnn::Mat& mask, const ncnn::Mat& cos_cache,
                                   const ncnn::Mat& sin_cache, KvCache& kv_cache, int attn_cnt,
-                                  bool is_prefill) {
+                                  bool is_prefill, ncnn::Mat* target_features) {
     ncnn::Mat decode_out;
     ncnn::Extractor ex = decoder_net.create_extractor();
     if (ex.input("in0", embeds) != 0) throw std::runtime_error("decoder failed to input in0");
@@ -165,7 +188,53 @@ ncnn::Mat llm_run_decoder_with_kv(ncnn::Net& decoder_net, const ncnn::Mat& embed
     if (ex.extract("out0", decode_out) != 0 || decode_out.empty()) {
         throw std::runtime_error("decoder failed to extract out0");
     }
+    if (target_features &&
+        (ex.extract("out1", *target_features) != 0 || target_features->empty())) {
+        throw std::runtime_error("decoder failed to extract DFlash target features");
+    }
     return decode_out;
+}
+
+ncnn::Mat llm_run_dflash_with_kv(ncnn::Net& network, const ncnn::Mat& noise_embeddings,
+                                 const ncnn::Mat& target_features, const ncnn::Mat& mask,
+                                 const ncnn::Mat& cosine, const ncnn::Mat& sine, KvCache& cache,
+                                 int attention_layers, bool prefill) {
+    ncnn::Extractor ex = network.create_extractor();
+    if (ex.input("in0", noise_embeddings) != 0 || ex.input("in1", target_features) != 0 ||
+        ex.input("in2", mask) != 0 || ex.input("in3", cosine) != 0 || ex.input("in4", sine) != 0) {
+        throw std::runtime_error("DFlash failed to set graph inputs");
+    }
+    if (!prefill && static_cast<int>(cache.size()) < attention_layers) {
+        throw std::runtime_error("DFlash kv_cache is smaller than attention layer count");
+    }
+    for (int i = 0; i < attention_layers; ++i) {
+        const std::string key = "cache_k" + std::to_string(i);
+        const std::string value = "cache_v" + std::to_string(i);
+        ncnn::Mat empty;
+        const ncnn::Mat& key_input = prefill ? empty : cache[i].first;
+        const ncnn::Mat& value_input = prefill ? empty : cache[i].second;
+        if (ex.input(key.c_str(), key_input) != 0 || ex.input(value.c_str(), value_input) != 0) {
+            throw std::runtime_error("DFlash failed to input cache");
+        }
+    }
+    KvCache next_cache;
+    next_cache.reserve(attention_layers);
+    for (int i = 0; i < attention_layers; ++i) {
+        ncnn::Mat key, value;
+        const std::string key_name = "out_cache_k" + std::to_string(i);
+        const std::string value_name = "out_cache_v" + std::to_string(i);
+        if (ex.extract(key_name.c_str(), key, 1) != 0 || key.empty() ||
+            ex.extract(value_name.c_str(), value, 1) != 0 || value.empty()) {
+            throw std::runtime_error("DFlash failed to extract cache");
+        }
+        next_cache.emplace_back(std::move(key), std::move(value));
+    }
+    ncnn::Mat output;
+    if (ex.extract("out0", output) != 0 || output.empty()) {
+        throw std::runtime_error("DFlash failed to extract output");
+    }
+    cache = std::move(next_cache);
+    return output;
 }
 
 ncnn::Mat llm_run_lm_head(ncnn::Net& lm_head_net, const ncnn::Mat& hidden_states) {
@@ -181,7 +250,8 @@ ncnn::Mat llm_run_lm_head(ncnn::Net& lm_head_net, const ncnn::Mat& hidden_states
 ncnn::Mat llm_run_decoder_with_kv_vulkan(ncnn::Net& decoder_net, const ncnn::Mat& embeds,
                                          const ncnn::Mat& mask, const ncnn::Mat& cos_cache,
                                          const ncnn::Mat& sin_cache, VulkanKvCache& kv_cache,
-                                         int attn_cnt, bool is_prefill) {
+                                         int attn_cnt, bool is_prefill,
+                                         ncnn::Mat* target_features) {
     const ncnn::VulkanDevice* vkdev = decoder_net.vulkan_device();
     if (!vkdev) throw std::runtime_error("decoder has no Vulkan device");
 
@@ -197,12 +267,46 @@ ncnn::Mat llm_run_decoder_with_kv_vulkan(ncnn::Net& decoder_net, const ncnn::Mat
 
     ncnn::Mat decode_cpu;
     cmd.record_download(decode_gpu, decode_cpu, decoder_net.opt);
+    ncnn::Mat target_features_cpu;
+    if (target_features) {
+        ncnn::VkMat target_features_gpu;
+        if (ex.extract("out1", target_features_gpu, cmd) != 0 || target_features_gpu.empty()) {
+            throw std::runtime_error("decoder failed to extract Vulkan DFlash target features");
+        }
+        cmd.record_download(target_features_gpu, target_features_cpu, decoder_net.opt);
+    }
     const int ret = cmd.submit_and_wait();
     if (ret != 0 || decode_cpu.empty()) {
         throw std::runtime_error("decoder Vulkan command failed: ret=" + std::to_string(ret));
     }
     kv_cache = std::move(next_cache);
+    if (target_features) *target_features = std::move(target_features_cpu);
     return decode_cpu;
+}
+
+ncnn::Mat llm_run_dflash_with_kv_vulkan(ncnn::Net& network, const ncnn::Mat& noise_embeddings,
+                                        const ncnn::Mat& target_features, const ncnn::Mat& mask,
+                                        const ncnn::Mat& cosine, const ncnn::Mat& sine,
+                                        VulkanKvCache& cache, int attention_layers, bool prefill) {
+    const ncnn::VulkanDevice* vkdev = network.vulkan_device();
+    if (!vkdev) throw std::runtime_error("DFlash has no Vulkan device");
+    ncnn::Extractor ex = network.create_extractor();
+    input_dflash_vulkan(ex, noise_embeddings, target_features, mask, cosine, sine, cache,
+                        attention_layers, prefill);
+    ncnn::VkCompute command(vkdev);
+    VulkanKvCache next_cache = extract_vulkan_caches(ex, command, attention_layers);
+    ncnn::VkMat output_gpu;
+    if (ex.extract("out0", output_gpu, command) != 0 || output_gpu.empty()) {
+        throw std::runtime_error("DFlash failed to extract Vulkan output");
+    }
+    ncnn::Mat output;
+    command.record_download(output_gpu, output, network.opt);
+    const int ret = command.submit_and_wait();
+    if (ret != 0 || output.empty()) {
+        throw std::runtime_error("DFlash Vulkan command failed: ret=" + std::to_string(ret));
+    }
+    cache = std::move(next_cache);
+    return output;
 }
 
 ncnn::Mat llm_run_decoder_lm_head_with_kv_vulkan(ncnn::Net& decoder_net, ncnn::Net& lm_head_net,

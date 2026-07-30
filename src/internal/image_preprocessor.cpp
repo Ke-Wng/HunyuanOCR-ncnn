@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <stdexcept>
 
 #include "internal/image.h"
@@ -81,6 +82,37 @@ HunyuanVisionInput HunyuanVisionPreprocessor::process(const ncnn::Mat& bgr) cons
         result.grid_w % config_.spatial_merge_size != 0) {
         throw std::runtime_error("vision grid is not divisible by spatial merge size");
     }
+    ncnn::Mat grouped(result.target_w, result.target_h, 3, sizeof(float));
+    const int patch = config_.patch_size;
+    const int merge = config_.spatial_merge_size;
+    int destination_patch = 0;
+    for (int block_y = 0; block_y < result.grid_h / merge; ++block_y) {
+        for (int block_x = 0; block_x < result.grid_w / merge; ++block_x) {
+            for (int inner_y = 0; inner_y < merge; ++inner_y) {
+                for (int inner_x = 0; inner_x < merge; ++inner_x) {
+                    const int source_patch_y = block_y * merge + inner_y;
+                    const int source_patch_x = block_x * merge + inner_x;
+                    const int destination_patch_y = destination_patch / result.grid_w;
+                    const int destination_patch_x = destination_patch % result.grid_w;
+                    for (int channel = 0; channel < 3; ++channel) {
+                        const ncnn::Mat source = result.pixel_values.channel(channel);
+                        ncnn::Mat destination = grouped.channel(channel);
+                        for (int row = 0; row < patch; ++row) {
+                            const float* source_row =
+                                source.row(source_patch_y * patch + row) + source_patch_x * patch;
+                            float* destination_row =
+                                destination.row(destination_patch_y * patch + row) +
+                                destination_patch_x * patch;
+                            std::memcpy(destination_row, source_row,
+                                        static_cast<size_t>(patch) * sizeof(float));
+                        }
+                    }
+                    ++destination_patch;
+                }
+            }
+        }
+    }
+    result.pixel_values = std::move(grouped);
     return result;
 }
 

@@ -7,9 +7,7 @@ import argparse
 import json
 from pathlib import Path
 
-
 DEFAULT_MODEL_ID = "tencent/HunyuanOCR"
-DEFAULT_SUBFOLDER = "v1.0"
 
 
 def validate_model_path(model_path: Path) -> Path:
@@ -23,27 +21,20 @@ def validate_model_path(model_path: Path) -> Path:
     return model_path
 
 
-def find_snapshot(model_id: str, subfolder: str = "", cache_root: Path | None = None) -> Path:
+def find_snapshot(model_id: str, cache_root: Path | None = None) -> Path:
     root = cache_root or Path.home() / ".cache" / "huggingface" / "hub"
     pattern = "models--" + model_id.replace("/", "--") + "/snapshots/*"
     candidates = sorted(root.glob(pattern))
     if not candidates:
         raise SystemExit(f"HF snapshot not found for {model_id!r}")
-    snapshot = candidates[-1]
-    if subfolder:
-        snapshot = snapshot / subfolder
-    return validate_model_path(snapshot)
+    return validate_model_path(candidates[-1])
 
 
 def resolve_model_path(
     model_path: Path | None,
     model_id: str = DEFAULT_MODEL_ID,
-    subfolder: str = DEFAULT_SUBFOLDER,
 ) -> Path:
     if model_path is not None:
-        model_path = model_path.expanduser().resolve()
-        if subfolder and not (model_path / "config.json").is_file():
-            model_path /= subfolder
         return validate_model_path(model_path)
 
     try:
@@ -54,13 +45,7 @@ def resolve_model_path(
             "install requirements/export.txt or pass --model-path"
         ) from exc
 
-    download_options = {"repo_id": model_id}
-    if subfolder:
-        download_options["allow_patterns"] = [f"{subfolder}/*"]
-    snapshot = Path(snapshot_download(**download_options))
-    if subfolder:
-        snapshot /= subfolder
-    return validate_model_path(snapshot)
+    return validate_model_path(Path(snapshot_download(repo_id=model_id)))
 
 
 def export_tokenizer(model_path: Path, out_dir: Path) -> None:
@@ -108,11 +93,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-path", type=Path)
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
-    parser.add_argument("--subfolder", default=DEFAULT_SUBFOLDER)
     parser.add_argument("--out", type=Path, default=Path("assets/hunyuan_ocr"))
     args = parser.parse_args()
 
-    model_path = resolve_model_path(args.model_path, args.model_id, args.subfolder)
+    model_path = resolve_model_path(args.model_path, args.model_id)
     export_tokenizer(model_path, args.out.resolve())
 
 

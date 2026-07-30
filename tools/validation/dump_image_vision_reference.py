@@ -14,11 +14,11 @@ ROOT = Path(__file__).resolve().parents[2]
 
 from tools.export.export_hunyuan_ocr import (  # noqa: E402
     FullVisionWrapper,
+    first_attr,
     require_transformers_class,
 )
 from tools.export.export_tokenizer import (  # noqa: E402
     DEFAULT_MODEL_ID,
-    DEFAULT_SUBFOLDER,
     resolve_model_path,
 )
 
@@ -28,11 +28,10 @@ def main() -> None:
     parser.add_argument("--dump-root", type=Path, required=True)
     parser.add_argument("--model-path", type=Path)
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
-    parser.add_argument("--subfolder", default=DEFAULT_SUBFOLDER)
     args = parser.parse_args()
 
     model_cls = require_transformers_class()
-    model_path = resolve_model_path(args.model_path, args.model_id, args.subfolder)
+    model_path = resolve_model_path(args.model_path, args.model_id)
     model = model_cls.from_pretrained(
         str(model_path),
         attn_implementation="eager",
@@ -40,7 +39,19 @@ def main() -> None:
         device_map="cpu",
         trust_remote_code=True,
     ).eval()
-    wrapper = FullVisionWrapper(model.vit).eval()
+    vision = first_attr(
+        model,
+        [
+            "model.vision_tower",
+            "vision_tower",
+            "vision_model",
+            "visual",
+            "vit",
+        ],
+    )
+    if vision is None:
+        raise SystemExit("could not locate vision model")
+    wrapper = FullVisionWrapper(vision).eval()
 
     for meta_path in sorted(args.dump_root.glob("*/meta.json")):
         meta = json.loads(meta_path.read_text(encoding="utf-8"))

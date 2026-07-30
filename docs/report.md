@@ -1,7 +1,8 @@
 # HunyuanOCR-ncnn 技术报告
 
-> 将 HunyuanOCR 的图像理解与自回归文本生成链路完整部署到 ncnn，构建一个默认 CPU
-> FP32、可选 Vulkan FP32/Mixed、支持可变尺寸图像且可从 C++ 直接调用的 OCR 运行时。
+> 将 HunyuanOCR v1.5 的图像理解、自回归生成与 DFlash 投机解码链路部署到 ncnn，
+> 构建一个默认 CPU FP32、可选 Vulkan FP32/Mixed、支持可变尺寸图像且可从 C++
+> 直接调用的 OCR 运行时。
 
 ---
 
@@ -16,6 +17,7 @@ HunyuanOCR 是一个视觉语言模型（VLM）：输入一张图片和一段中
 
 - **CPU FP32 默认可用**，不依赖显卡；
 - **可选 Vulkan GPU 加速**，支持严格 FP32 和显式 Mixed 两种精度；
+- **支持 DFlash 贪心解码**，通过多 token 草稿与 Target 验证提高生成吞吐；
 - **支持可变尺寸图像**，无需为不同长宽比单独准备模型；
 - **可从 C++ 直接调用**，在线推理不需要 Python 参与。
 
@@ -25,8 +27,9 @@ HunyuanOCR 是一个视觉语言模型（VLM）：输入一张图片和一段中
 
 ## 2. 运行时架构
 
-模型包被拆分为四个职责明确的 ncnn 子图——视觉编码、文本 embedding、文本 Decoder 与 LM Head；
-而图像预处理、图文序列组织、xdRoPE 位置编码、KV Cache 生命周期、采样与分词，则由 C++ 运行时统一负责。
+模型包包含视觉编码、文本 embedding、Target Decoder 与 LM Head 四个基础 ncnn 子图；
+启用 DFlash 的模型包还包含 Draft 子图。图像预处理、图文序列组织、xdRoPE 位置编码、
+Target/Draft KV Cache 生命周期、采样与分词，则由 C++ 运行时统一负责。
 其设计原则是：**把纯粹的神经计算交给 ncnn，把带逻辑、带动态尺寸的策略留在 C++。**
 
 一次完整推理的数据流如下：
@@ -60,7 +63,7 @@ smart resize + RGB 归一化                       BBPE 分词
                        LM Head（InnerProduct）
                                 │
                                 ▼
-                    采样 → BBPE 解码 → 停止判断
+              AR 采样或 DFlash 草稿验证 → BBPE 解码 → 停止判断
 ```
 
 ---
@@ -144,7 +147,7 @@ ncnn 默认开启一项名为 **packing** 的加速：它把数据沿元素维�
   - 构造函数：传入模型目录与 `RuntimeOptions` 完成加载；
   - `prefill(image, prompt)`：只做预填充（处理图像与提示词、建立 KV Cache），用于计时或诊断；
   - `recognize(image, prompt, options, on_text)`：执行完整识别，并可选地通过 `on_text` 回调**流式**返回文本。
-- **`RuntimeOptions`**：运行时配置，如线程数。
+- **`RuntimeOptions`**：运行时配置，如线程数、Vulkan 设备、精度策略与是否启用 DFlash。
 - **`GenerationOptions`**：生成参数，如最大生成长度、温度、`top_p` / `top_k`、重复惩罚、是否采样。
 - **`Result`**：识别结果，包含输出文本、token 序列，以及分阶段耗时的 `Profile`。
 
@@ -209,18 +212,56 @@ Vulkan command 中，成功执行后才用新 Cache 替换旧 Cache。
 FP32 是 Vulkan 默认精度，并显式关闭 ncnn 默认的 FP16/BF16 storage 与 arithmetic。
 Mixed 必须由调用者显式选择：Vision 使用 FP16 storage 和 FP32 accumulation；
 Decoder/KV Cache 优先使用 BF16 storage，不支持时使用 FP16 storage 和 FP32
-accumulation；LM Head 保持 FP32，Decoder hidden state 在 GPU 上转换后再输入。
+accumulation；对数值敏感的 DFlash Draft 与 LM Head 保持 FP32。该选择性策略避免
+Draft 低精度导致接受率归零，同时仍显著降低 Vision 与 Target Decoder 的显存占用。
+
+### 3.8 DFlash 投机解码
+
+自回归（AR）解码每生成一个 token 都要完整执行一次 Target Decoder，单步开销无法摊薄。
+**DFlash 投机解码**改为按“块”推进：先由轻量的 Draft 子图一次并行猜出多个候选 token，
+再让 Target Decoder 在一次多 token 前向中统一验证。DFlash 仅在模型包包含 Draft 图
+且调用者显式启用时生效，当前只支持贪心解码。
+
+一个 DFlash 块的流程如下：
+
+```text
+当前 token
+   │
+   ▼
+[Draft 起草]  输入 mask token + Target 中间特征 + Draft KV Cache
+   │          一次并行提出最多 16 个候选 token
+   ▼
+[Target 验证] 用多 token causal mask 一次前向，得到每个候选位置的 posterior
+   │
+   ▼
+[接受判定]    逐位比较 posterior 与草稿候选：
+   │          接受连续匹配的前缀，并保留第一个由 Target 修正的 token
+   ▼
+[状态提交]    Target / Draft KV Cache 按实际接受长度裁剪并提交
+   │
+   └── 未触发 EOS / token budget ──► 回到块起点，继续下一块
+```
+
+加速来自“**一个多 token Target 块替代多次单 token Target 调用**”，而不是减少模型
+层数：验证完成后，Target 与 Draft 的 KV Cache 都按实际接受长度直接裁剪并提交，
+不再逐 token 精确回放。工程上，导出器还为每层 SDPA 生成独立的 mask Split 输出，
+以适配 ncnn light mode 的输入释放规则。
+
+需要注意的是，多 token 与逐 token 的浮点归约路径不同，因此 CPU/Vulkan DFlash 不承诺
+与 AR 的完整 token 序列严格一致。运行时保证的是内部状态一致：已接受前缀、position、
+当前 token 与 KV Cache 始终自洽，并在 token budget 或 EOS 边界提交合法的最终状态。
 
 ---
 
 ## 4. 正确性验证
 
-跨框架移植最大的风险，是“表面能跑、实际算错”。项目为此建立了四层验证：
+跨框架移植最大的风险，是“表面能跑、实际算错”。项目为此建立了五层验证：
 
 1. **C++ 单元测试**：覆盖 xdRoPE、采样重复惩罚、ncnn Mat 布局与图像预处理。
 2. **Python 默认测试**：覆盖快照定位、tokenizer/metadata 导出与 ncnn 图 I/O 契约，全程不访问网络。
 3. **PyTorch/ncnn 数值回放**：以 PyTorch FP32 输出为基准，覆盖动态视觉网格、六类真实图片与 LM Head。
-4. **端到端固定样例**：检查 resize 网格、视觉 token 数、首 token 与文本结果。
+4. **DFlash 回放**：比较官方 Draft 与 ncnn Draft 的 posterior、候选 token 和接受前缀。
+5. **端到端固定样例**：检查 resize 网格、视觉 token 数、首 token、文本与公开生成状态。
 
 六张真实图片的视觉回放使用最终发布代码复测，判定阈值为 cosine `> 0.999`、
 relative L2 `< 0.02`：
@@ -239,7 +280,8 @@ argmax 完全一致。端到端 512×512 固定样例得到 `32×32` patch 网�
 首个生成 token id 为 39（对应 `H`）。
 
 重型回放默认关闭，可分别通过环境变量 `HUNYUAN_OCR_RUN_REPLAY`、`HUNYUAN_OCR_RUN_IMAGE_REPLAY`、
-`HUNYUAN_OCR_RUN_LM_HEAD_REPLAY` 与 `HUNYUAN_OCR_RUN_E2E` 启用。
+`HUNYUAN_OCR_RUN_LM_HEAD_REPLAY`、`HUNYUAN_OCR_RUN_DFLASH_REPLAY` 与
+`HUNYUAN_OCR_RUN_E2E` 启用。
 
 ---
 
@@ -261,7 +303,7 @@ warmup 1 次、测量 1 次：
 python -m tools.validation.benchmark --threads 1 2 4 8 --warmup 1 --repeats 1
 ```
 
-Vulkan 实现在 RTX 4090 上使用同一张字幕图、4 线程、8 个生成 token 复测。这里的
+AR Vulkan 实现在 RTX 4090 上使用同一张字幕图、4 线程、8 个生成 token 复测。这里的
 `prefill` 是 Profile 内的预填充计算时间，生成吞吐只统计预填充完成后的逐 token 阶段：
 
 | 后端 | 实际 storage（Vision / Decoder / LM Head） | prefill | 生成吞吐 | 峰值显存 |
@@ -278,6 +320,17 @@ GPU 与 CPU 的首 token 一致，Vulkan FP32 与 Mixed 的 8-token 贪心序列
 在一个空格 token 上发生分支，属于不同后端浮点归约造成的贪心边界差异。固定 E2E golden
 在 CPU、Vulkan FP32 和 Vulkan Mixed 三种模式下均通过。
 
+DFlash 使用 `document_page.png`、Vulkan Mixed、4 线程与 64 个生成 token 进行三次复测。
+Vision/Target/Draft/LM Head 的实际 storage 分别为 FP16/FP16/FP32/FP32：
+
+| 解码方式 | 中位 wall time | 中位生成吞吐 | 草稿接受情况 |
+|---|---:|---:|---:|
+| AR | 2.017 s | 34.20 token/s | — |
+| DFlash | 0.671 s | 114.64 token/s | 9 个块共接受 55/135 候选 |
+
+该输入上 DFlash 的 wall-time 加速为 `3.01x`，且三次运行的文本和 token IDs 均与
+Vulkan Mixed AR 一致。接受率依赖图片、prompt 和生成内容，应始终在目标工作负载上复测。
+
 优化后，LM Head 的耗时已趋近于零，整体时间主要落在视觉编码与文本 Decoder 上。由于视觉注意力
 的计算量随图像 token 数呈平方增长，图片的像素上限是最主要的部署调节参数：调低可进一步提速，
 代价是牺牲部分细节分辨能力。
@@ -290,5 +343,5 @@ GPU 与 CPU 的首 token 一致，Vulkan FP32 与 Mixed 的 8-token 贪心序列
 
 - **数值精度**：评估 pnnx `fp16=1` 半精度导出与 ncnn 量化，在可接受的精度损失内进一步压缩体积、提升速度；
 - **调参**：继续调优图片像素上限（`min_pixels` / `max_pixels`）与运行时网格策略，在速度与识别精度间取得更好平衡；
-- **解码提速**：完整生成的主要瓶颈是 24 层文本 Decoder 的逐 token CPU 推理；可借鉴 HunyuanOCR v1.5 的
-  **DFlash 投机解码**等思路，一次推进多个 token 以摊薄单步开销。
+- **DFlash 调优**：分析低接受率块，评估 Draft 精度、block size 与 Target 特征选择，
+  在不破坏状态一致性的前提下进一步提高接受率；

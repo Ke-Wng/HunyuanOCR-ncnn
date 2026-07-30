@@ -13,11 +13,11 @@ ROOT = Path(__file__).resolve().parents[2]
 
 from tools.export.export_hunyuan_ocr import (  # noqa: E402
     FullVisionWrapper,
+    first_attr,
     require_transformers_class,
 )
 from tools.export.export_tokenizer import (  # noqa: E402
     DEFAULT_MODEL_ID,
-    DEFAULT_SUBFOLDER,
     resolve_model_path,
 )
 
@@ -30,7 +30,6 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-path", type=Path)
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
-    parser.add_argument("--subfolder", default=DEFAULT_SUBFOLDER)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--grid-h", type=int, default=4)
     parser.add_argument("--grid-w", type=int, default=4)
@@ -43,7 +42,7 @@ def main() -> None:
     if args.grid_h % 2 or args.grid_w % 2:
         raise SystemExit("grid dimensions must be even for spatial merge")
 
-    model_path = resolve_model_path(args.model_path, args.model_id, args.subfolder)
+    model_path = resolve_model_path(args.model_path, args.model_id)
     out_dir = args.out.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -56,7 +55,18 @@ def main() -> None:
         trust_remote_code=True,
     ).eval()
 
-    vision = model.vit
+    vision = first_attr(
+        model,
+        [
+            "model.vision_tower",
+            "vision_tower",
+            "vision_model",
+            "visual",
+            "vit",
+        ],
+    )
+    if vision is None:
+        raise SystemExit("could not locate vision model")
     patch_size = int(vision.config.patch_size)
     if patch_size != args.patch_size:
         raise SystemExit(f"model patch size is {patch_size}, expected {args.patch_size}")

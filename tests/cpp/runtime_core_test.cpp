@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "hunyuan_ocr/runtime.h"
+#include "internal/dflash_commit.h"
 #include "internal/image_preprocessor.h"
 #include "internal/text_runtime.h"
 #include "internal/xdrope.h"
@@ -30,34 +31,34 @@ void require_close(float actual, float expected, float tol, const std::string& m
     }
 }
 
-void test_hunyuan_xdrope() {
-    const int seq_len = 3;
+void test_hunyuan_mrope() {
+    const int seq_len = 2;
     const int head_dim = 8;
     const std::vector<int> sections = {1, 1, 1, 1};
-    std::vector<int> pos0 = {0, 1, 2};
-    std::vector<int> pos1 = {10, 11, 12};
-    std::vector<int> pos2 = {20, 21, 22};
-    std::vector<int> pos3 = {30, 31, 32};
+    std::vector<int> pos0 = {1, 2};
+    std::vector<int> pos1 = {11, 12};
+    std::vector<int> pos2 = {21, 22};
+    std::vector<int> pos3 = {31, 32};
     const std::vector<int> pos4[4] = {pos0, pos1, pos2, pos3};
 
-    ncnn::Mat cos_cache;
-    ncnn::Mat sin_cache;
-    generate_hunyuan_xdrope_cos_sin(pos4, seq_len, head_dim, sections, 10000.0f, 1000.0f, cos_cache,
-                                    sin_cache);
+    ncnn::Mat cosine;
+    ncnn::Mat sine;
+    generate_hunyuan_mrope_cos_sin(pos4, seq_len, head_dim, sections, 10000.0F, 1000.0F, cosine,
+                                   sine);
 
-    require_true(cos_cache.w == head_dim / 2 && cos_cache.h == seq_len, "xdrope cos shape");
-    require_true(sin_cache.w == head_dim / 2 && sin_cache.h == seq_len, "xdrope sin shape");
-
-    const float base = 10000.0f * std::pow(1000.0f, (float)head_dim / ((float)head_dim - 2.0f));
-    for (int i = 0; i < seq_len; i++) {
-        const float* cos_row = cos_cache.row(i);
-        const float* sin_row = sin_cache.row(i);
-        const int positions[4] = {pos0[i], pos1[i], pos2[i], pos3[i]};
-        for (int j = 0; j < head_dim / 2; j++) {
-            const float inv_freq = 1.0f / std::pow(base, (float)(j * 2) / (float)head_dim);
-            const float t = positions[j] * inv_freq;
-            require_close(cos_row[j], std::cos(t), 1e-5f, "xdrope cos value");
-            require_close(sin_row[j], std::sin(t), 1e-5f, "xdrope sin value");
+    require_true(cosine.w == head_dim && cosine.h == seq_len, "mrope cosine shape");
+    require_true(sine.w == head_dim && sine.h == seq_len, "mrope sine shape");
+    const float base = 10000.0F * std::pow(1000.0F, (float)head_dim / ((float)head_dim - 2.0F));
+    for (int token = 0; token < seq_len; ++token) {
+        const int positions[4] = {pos0[token], pos1[token], pos2[token], pos3[token]};
+        for (int index = 0; index < head_dim; ++index) {
+            const int axis = index / 2;
+            const int frequency = index % (head_dim / 2);
+            const float inverse_frequency =
+                1.0F / std::pow(base, (float)(frequency * 2) / (float)head_dim);
+            const float angle = positions[axis] * inverse_frequency;
+            require_close(cosine.row(token)[index], std::cos(angle), 1e-5F, "mrope cosine value");
+            require_close(sine.row(token)[index], std::sin(angle), 1e-5F, "mrope sine value");
         }
     }
 }
@@ -77,6 +78,27 @@ void test_sampling_argmax_with_repetition_penalty() {
 
     const int next = select_next_token(logits, {1}, cfg);
     require_true(next == 2, "argmax should apply repetition penalty before selection");
+}
+
+void test_dflash_commit_plan_caps_to_budget() {
+    const std::vector<int> verification_ids = {10, 11, 12, 13};
+    const std::vector<int> posterior = {11, 12, 13, 14};
+    const DFlashCommitPlan plan = make_dflash_commit_plan(3, 1, verification_ids, posterior, {99});
+    require_true(plan.emitted_drafts == 1, "DFlash commit must cap accepted drafts to budget");
+    require_true(plan.commit_count == 2, "DFlash commit count must include current token");
+    require_true(plan.next_token == 12, "DFlash next token must use the committed posterior row");
+    require_true(!plan.accepted_eos, "DFlash non-EOS commit must not report a stop");
+}
+
+void test_dflash_commit_plan_preserves_accepted_eos() {
+    const std::vector<int> verification_ids = {10, 11, 99, 13};
+    const std::vector<int> posterior = {11, 99, 0, 0};
+    const DFlashCommitPlan plan = make_dflash_commit_plan(2, 3, verification_ids, posterior, {99});
+    require_true(plan.emitted_drafts == 2, "DFlash commit must include accepted EOS");
+    require_true(plan.commit_count == 3, "DFlash EOS commit count");
+    require_true(plan.accepted_eos, "DFlash commit must report accepted EOS");
+    require_true(plan.stop_token == 99, "DFlash stop token must be accepted EOS");
+    require_true(plan.next_token == 99, "DFlash terminal current token must remain EOS");
 }
 
 void test_batch_mat_layout() {
@@ -123,22 +145,76 @@ void test_hunyuan_image_preprocessor() {
     require_close(output.pixel_values.channel(2).row(0)[0], 10.0f / 255.0f, 1e-6f, "blue channel");
 }
 
+void test_merge_grouped_patch_order() {
+    HunyuanVisionPreprocessConfig config;
+    config.patch_size = 16;
+    config.spatial_merge_size = 2;
+    config.min_pixels = 64 * 64;
+    config.max_pixels = 64 * 64;
+    for (int channel = 0; channel < 3; ++channel) {
+        config.image_mean[channel] = 0.0F;
+        config.image_std[channel] = 1.0F;
+    }
+
+    ncnn::Mat bgr(64, 64, 3, (size_t)1u);
+    unsigned char* pixels = static_cast<unsigned char*>(bgr.data);
+    for (int y = 0; y < 64; ++y) {
+        for (int x = 0; x < 64; ++x) {
+            const unsigned char value = static_cast<unsigned char>((y / 16) * 4 + (x / 16) + 1);
+            unsigned char* pixel = pixels + (static_cast<size_t>(y) * 64 + x) * 3;
+            pixel[0] = value;
+            pixel[1] = value;
+            pixel[2] = value;
+        }
+    }
+
+    const HunyuanVisionInput output = HunyuanVisionPreprocessor(config).process(bgr);
+    const int expected_source_patches[16] = {
+        0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15,
+    };
+    for (int destination = 0; destination < 16; ++destination) {
+        const int y = (destination / 4) * 16 + 8;
+        const int x = (destination % 4) * 16 + 8;
+        const float expected = (expected_source_patches[destination] + 1) / 255.0F;
+        require_close(output.pixel_values.channel(0).row(y)[x], expected, 1e-6F,
+                      "merge-grouped patch order");
+    }
+}
+
 void test_runtime_option_defaults() {
     const hunyuan_ocr::RuntimeOptions options;
     require_true(options.num_threads == 4, "default runtime thread count");
     require_true(options.vulkan_device == -1, "CPU must remain the default backend");
     require_true(options.vulkan_precision == hunyuan_ocr::VulkanPrecision::Fp32,
                  "Vulkan FP32 must remain the default precision");
+    require_true(!options.enable_dflash, "DFlash must remain explicit opt-in");
+    require_true(hunyuan_ocr::Profile{}.dflash_storage == "disabled",
+                 "DFlash storage must report disabled by default");
+}
+
+void test_standard_rope() {
+    ncnn::Mat cosine;
+    ncnn::Mat sine;
+    generate_rope_cos_sin({0, 1}, 8, 10000.0F, cosine, sine);
+    require_true(cosine.w == 4 && cosine.h == 2, "standard RoPE cosine shape");
+    require_true(sine.w == 4 && sine.h == 2, "standard RoPE sine shape");
+    require_close(cosine.row(0)[0], 1.0F, 0.0F, "standard RoPE position zero cosine");
+    require_close(sine.row(0)[0], 0.0F, 0.0F, "standard RoPE position zero sine");
+    require_close(cosine.row(1)[0], std::cos(1.0F), 1e-6F, "standard RoPE first frequency");
 }
 
 }  // namespace
 
 int main() {
-    test_hunyuan_xdrope();
+    test_hunyuan_mrope();
     test_sampling_argmax_with_repetition_penalty();
+    test_dflash_commit_plan_caps_to_budget();
+    test_dflash_commit_plan_preserves_accepted_eos();
     test_batch_mat_layout();
     test_hunyuan_image_preprocessor();
+    test_merge_grouped_patch_order();
     test_runtime_option_defaults();
+    test_standard_rope();
     std::printf("runtime core tests passed\n");
     return 0;
 }

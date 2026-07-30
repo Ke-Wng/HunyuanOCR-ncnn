@@ -20,8 +20,11 @@ struct Context {
     std::shared_ptr<Context> clone() const {
         auto copy = std::make_shared<Context>();
         copy->kv_cache = kv_cache;
+        copy->draft_kv_cache = draft_kv_cache;
+        copy->target_features = target_features;
 #if NCNN_VULKAN
         copy->vulkan_kv_cache = vulkan_kv_cache;
+        copy->vulkan_draft_kv_cache = vulkan_draft_kv_cache;
 #endif
         copy->use_vulkan = use_vulkan;
         copy->current_token = current_token;
@@ -41,8 +44,11 @@ struct Context {
     }
 
     KvCache kv_cache;
+    KvCache draft_kv_cache;
+    ncnn::Mat target_features;
 #if NCNN_VULKAN
     VulkanKvCache vulkan_kv_cache;
+    VulkanKvCache vulkan_draft_kv_cache;
 #endif
     bool use_vulkan = false;
     int current_token = 0;

@@ -26,9 +26,10 @@ Result make_result(const std::shared_ptr<internal::Context>& context, const Prof
 class Runtime::Impl {
    public:
     Impl(const std::string& model_directory, const RuntimeOptions& options)
-        : engine(model_directory, options) {}
+        : engine(model_directory, options), dflash_enabled(options.enable_dflash) {}
 
     internal::Engine engine;
+    bool dflash_enabled = false;
 };
 
 Runtime::Runtime(const std::string& model_directory, const RuntimeOptions& options)
@@ -64,6 +65,9 @@ Result Runtime::recognize(const std::string& image_path, const std::string& prom
     }
     if (options.repetition_penalty <= 0.0F) {
         throw std::invalid_argument("repetition_penalty must be positive");
+    }
+    if (impl_->dflash_enabled && options.do_sample) {
+        throw std::invalid_argument("DFlash currently supports greedy decoding only");
     }
 
     ncnn::Mat image = internal::load_image(image_path);

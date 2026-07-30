@@ -16,6 +16,7 @@ struct RuntimeOptions {
     int num_threads = 4;
     int vulkan_device = -1;
     VulkanPrecision vulkan_precision = VulkanPrecision::Fp32;
+    bool enable_dflash = false;
 };
 
 struct GenerationOptions {
@@ -32,6 +33,7 @@ struct Profile {
     std::string requested_precision = "fp32";
     std::string vision_storage = "fp32";
     std::string decoder_storage = "fp32";
+    std::string dflash_storage = "disabled";
     std::string lm_head_storage = "fp32";
     int vulkan_device = -1;
     double preprocess_seconds = 0.0;
@@ -41,6 +43,8 @@ struct Profile {
     double rope_seconds = 0.0;
     double decoder_seconds = 0.0;
     double lm_head_seconds = 0.0;
+    double dflash_seconds = 0.0;
+    double verification_seconds = 0.0;
     double total_seconds = 0.0;
     int target_width = 0;
     int target_height = 0;
@@ -48,6 +52,9 @@ struct Profile {
     int grid_height = 0;
     int vision_tokens = 0;
     int sequence_length = 0;
+    int dflash_blocks = 0;
+    int dflash_accepted_tokens = 0;
+    int dflash_drafted_tokens = 0;
 };
 
 struct Result {

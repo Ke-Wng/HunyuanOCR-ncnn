@@ -80,7 +80,7 @@ if(BUILD_TESTING)
     target_link_libraries(runtime_core_test PRIVATE HunyuanOCRncnn::runtime ncnn)
     add_test(NAME runtime_core COMMAND runtime_core_test)
 
-    foreach(tool IN ITEMS vision_replay image_vision_replay lm_head_replay benchmark)
+    foreach(tool IN ITEMS vision_replay image_vision_replay lm_head_replay dflash_replay benchmark)
         add_executable(${tool} tests/cpp/${tool}.cpp)
         target_include_directories(${tool} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
         target_link_libraries(${tool} PRIVATE HunyuanOCRncnn::runtime ncnn nlohmann_json::nlohmann_json)

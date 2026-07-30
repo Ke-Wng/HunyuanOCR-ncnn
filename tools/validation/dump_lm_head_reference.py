@@ -11,8 +11,7 @@ import numpy as np
 import torch
 
 from tools.export.export_hunyuan_ocr import first_attr, require_transformers_class
-from tools.export.export_tokenizer import DEFAULT_MODEL_ID, DEFAULT_SUBFOLDER, resolve_model_path
-
+from tools.export.export_tokenizer import DEFAULT_MODEL_ID, resolve_model_path
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -22,7 +21,6 @@ def main() -> None:
     parser.add_argument("--model", type=Path, default=ROOT / "assets" / "hunyuan_ocr")
     parser.add_argument("--model-path", type=Path)
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
-    parser.add_argument("--subfolder", default=DEFAULT_SUBFOLDER)
     parser.add_argument("--hidden", type=Path, required=True)
     parser.add_argument("--logits", type=Path, required=True)
     parser.add_argument("--seed", type=int, default=20260715)
@@ -33,7 +31,7 @@ def main() -> None:
     rng = np.random.default_rng(args.seed)
     hidden = rng.standard_normal((1, hidden_size), dtype=np.float32)
 
-    model_path = resolve_model_path(args.model_path, args.model_id, args.subfolder)
+    model_path = resolve_model_path(args.model_path, args.model_id)
     model_cls = require_transformers_class()
     model = model_cls.from_pretrained(
         str(model_path),

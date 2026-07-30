@@ -8,7 +8,6 @@ import json
 import subprocess
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -30,15 +29,14 @@ def main() -> None:
         default=-1,
         help="-1 uses CPU; a non-negative value selects that Vulkan device",
     )
-    parser.add_argument(
-        "--vulkan-precision", choices=("fp32", "mixed"), default="fp32"
-    )
+    parser.add_argument("--vulkan-precision", choices=("fp32", "mixed"), default="fp32")
     parser.add_argument(
         "--max-new-tokens",
         type=int,
         default=0,
         help="0 benchmarks prefill only; positive values benchmark full generation",
     )
+    parser.add_argument("--dflash", action="store_true")
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--build-dir", type=Path, default=ROOT / "build")
     parser.add_argument("--out", type=Path, default=ROOT / "out" / "benchmark")
@@ -48,11 +46,7 @@ def main() -> None:
     results = []
     for threads in args.threads:
         use_vulkan = args.vulkan_device >= 0
-        backend = (
-            f"vulkan_{args.vulkan_device}_{args.vulkan_precision}"
-            if use_vulkan
-            else "cpu"
-        )
+        backend = f"vulkan_{args.vulkan_device}_{args.vulkan_precision}" if use_vulkan else "cpu"
         report_path = args.out / f"{backend}_threads_{threads}.json"
         command = [
             str(args.build_dir / "benchmark"),
@@ -77,6 +71,8 @@ def main() -> None:
             "--output",
             str(report_path),
         ]
+        if args.dflash:
+            command.append("--dflash")
         subprocess.run(
             command,
             cwd=ROOT,
@@ -94,6 +90,7 @@ def main() -> None:
         "vulkan_device": args.vulkan_device if args.vulkan_device >= 0 else None,
         "vulkan_precision": args.vulkan_precision,
         "max_new_tokens": args.max_new_tokens,
+        "dflash": args.dflash,
         "results": results,
     }
     summary_path = args.out / "summary.json"

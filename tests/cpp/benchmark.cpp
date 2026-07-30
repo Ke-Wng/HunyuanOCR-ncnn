@@ -17,12 +17,20 @@ std::string option(int argc, char** argv, const std::string& name, const std::st
     return fallback;
 }
 
+bool flag(int argc, char** argv, const std::string& name) {
+    for (int index = 1; index < argc; ++index) {
+        if (argv[index] == name) return true;
+    }
+    return false;
+}
+
 json profile_json(const hunyuan_ocr::Profile& profile) {
     return {
         {"backend", profile.backend},
         {"requested_precision", profile.requested_precision},
         {"vision_storage", profile.vision_storage},
         {"decoder_storage", profile.decoder_storage},
+        {"dflash_storage", profile.dflash_storage},
         {"lm_head_storage", profile.lm_head_storage},
         {"vulkan_device", profile.vulkan_device >= 0 ? json(profile.vulkan_device) : json(nullptr)},
         {"preprocess_seconds", profile.preprocess_seconds},
@@ -32,6 +40,8 @@ json profile_json(const hunyuan_ocr::Profile& profile) {
         {"rope_seconds", profile.rope_seconds},
         {"decoder_seconds", profile.decoder_seconds},
         {"lm_head_seconds", profile.lm_head_seconds},
+        {"dflash_seconds", profile.dflash_seconds},
+        {"verification_seconds", profile.verification_seconds},
         {"total_seconds", profile.total_seconds},
         {"target_w", profile.target_width},
         {"target_h", profile.target_height},
@@ -39,6 +49,9 @@ json profile_json(const hunyuan_ocr::Profile& profile) {
         {"grid_h", profile.grid_height},
         {"vision_tokens", profile.vision_tokens},
         {"seq_len", profile.sequence_length},
+        {"dflash_blocks", profile.dflash_blocks},
+        {"dflash_accepted_tokens", profile.dflash_accepted_tokens},
+        {"dflash_drafted_tokens", profile.dflash_drafted_tokens},
     };
 }
 
@@ -55,6 +68,7 @@ int main(int argc, char** argv) {
         const int vulkan_device = std::stoi(option(argc, argv, "--vulkan-device", "-1"));
         const bool use_vulkan = vulkan_device >= 0;
         const std::string precision = option(argc, argv, "--vulkan-precision", "fp32");
+        const bool dflash = flag(argc, argv, "--dflash");
         const int max_new_tokens = std::stoi(option(argc, argv, "--max-new-tokens", "0"));
         const std::string output_path = option(argc, argv, "--output", "benchmark.json");
         if (image.empty() || threads <= 0 || warmup < 0 || repeats <= 0 || vulkan_device < -1 ||
@@ -71,6 +85,7 @@ int main(int argc, char** argv) {
         runtime_options.vulkan_precision = precision == "mixed"
                                                ? hunyuan_ocr::VulkanPrecision::Mixed
                                                : hunyuan_ocr::VulkanPrecision::Fp32;
+        runtime_options.enable_dflash = dflash;
         hunyuan_ocr::GenerationOptions generation_options;
         generation_options.max_new_tokens = std::max(1, max_new_tokens);
 
@@ -91,8 +106,13 @@ int main(int argc, char** argv) {
             const auto end = std::chrono::steady_clock::now();
             json sample = profile_json(result.profile);
             const double wall_seconds = std::chrono::duration<double>(end - begin).count();
+            const double prefill_seconds =
+                result.profile.preprocess_seconds + result.profile.vision_seconds +
+                result.profile.tokenize_seconds + result.profile.text_embed_seconds +
+                result.profile.rope_seconds + result.profile.decoder_seconds +
+                result.profile.lm_head_seconds;
             const double generation_seconds =
-                max_new_tokens > 0 ? std::max(0.0, wall_seconds - result.profile.total_seconds)
+                max_new_tokens > 0 ? std::max(0.0, result.profile.total_seconds - prefill_seconds)
                                    : 0.0;
             sample["wall_seconds"] = wall_seconds;
             sample["generation_seconds"] = generation_seconds;
@@ -111,6 +131,7 @@ int main(int argc, char** argv) {
             {"backend", use_vulkan ? "vulkan" : "cpu"},
             {"vulkan_device", use_vulkan ? json(vulkan_device) : json(nullptr)},
             {"vulkan_precision", precision},
+            {"dflash", dflash},
             {"max_new_tokens", max_new_tokens},
             {"warmup", warmup},
             {"repeats", repeats},

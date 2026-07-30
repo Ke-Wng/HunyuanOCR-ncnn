@@ -9,7 +9,6 @@ does not expose HunYuanVLForConditionalGeneration.
 from __future__ import annotations
 
 import argparse
-import glob
 import json
 import os
 import shutil
@@ -26,7 +25,6 @@ import torch.nn.functional as F
 
 from tools.export.export_tokenizer import (
     DEFAULT_MODEL_ID,
-    DEFAULT_SUBFOLDER,
     export_tokenizer,
     resolve_model_path,
 )
@@ -65,12 +63,24 @@ class FullVisionWrapper(nn.Module):
         self.position_embedding = embeddings.position_embedding
         self.position_edge = int(embeddings.position_edge)
         self.embed_dim = int(embeddings.embed_dim)
-        self.interpolate_mode = str(embeddings.interpolate_mode)
+        self.interpolate_mode = str(
+            getattr(embeddings, "interpolate_mode", None) or embeddings.config.interpolate_mode
+        )
         self.patch_size = int(vision.config.patch_size)
         self.layers = vision.layers
-        perceive = vision.perceive
+        self.layers_require_attention_mask = hasattr(vision, "patch_merger")
+        perceive = getattr(vision, "perceive", None)
+        if perceive is None:
+            perceive = vision.patch_merger
         self.before_rms = perceive.before_rms
-        self.proj = perceive.proj
+        if hasattr(perceive, "proj"):
+            self.proj = perceive.proj
+        else:
+            self.proj = nn.Sequential(
+                perceive.proj_conv,
+                perceive.proj_act,
+                perceive.proj_out,
+            )
         self.mlp = perceive.mlp
         self.image_newline = perceive.image_newline
         self.image_begin = perceive.image_begin
@@ -99,7 +109,38 @@ class FullVisionWrapper(nn.Module):
         hidden_states = hidden_states.flatten(2).transpose(1, 2) + position
 
         for layer in self.layers:
-            hidden_states = layer(hidden_states)
+            if self.layers_require_attention_mask:
+                residual = hidden_states
+                x = layer.layer_norm1(hidden_states)
+                attention = layer.self_attn
+                batch_size, sequence_length, _ = x.shape
+                q = (
+                    attention.q_proj(x)
+                    .view(batch_size, sequence_length, attention.num_heads, attention.head_dim)
+                    .transpose(1, 2)
+                )
+                k = (
+                    attention.k_proj(x)
+                    .view(batch_size, sequence_length, attention.num_heads, attention.head_dim)
+                    .transpose(1, 2)
+                )
+                v = (
+                    attention.v_proj(x)
+                    .view(batch_size, sequence_length, attention.num_heads, attention.head_dim)
+                    .transpose(1, 2)
+                )
+                x = torch.nn.functional.scaled_dot_product_attention(
+                    q,
+                    k,
+                    v,
+                    dropout_p=0.0,
+                    scale=attention.scaling,
+                )
+                x = x.transpose(1, 2).contiguous().reshape(batch_size, sequence_length, -1)
+                hidden_states = residual + attention.o_proj(x)
+                hidden_states = hidden_states + layer.mlp(layer.layer_norm2(hidden_states))
+            else:
+                hidden_states = layer(hidden_states)
 
         # Inline the official perceive block so the spatial reshape uses the
         # symbolic grid dimensions instead of the source's int(h.item()) path.
@@ -114,9 +155,7 @@ class FullVisionWrapper(nn.Module):
         newline = hidden_states[:, :, :, :1] * 0.0
         newline = newline + self.image_newline.reshape(1, channels, 1, 1)
         hidden_states = torch.cat((hidden_states, newline), dim=-1)
-        hidden_states = hidden_states.reshape(
-            hidden_states.size(0), channels, -1
-        ).permute(0, 2, 1)
+        hidden_states = hidden_states.reshape(hidden_states.size(0), channels, -1).permute(0, 2, 1)
         hidden_states = self.mlp(hidden_states)
         begin = hidden_states[:, :1, :] * 0.0
         begin = begin + self.image_begin.reshape(1, 1, -1)
@@ -129,25 +168,52 @@ class FullVisionWrapper(nn.Module):
 class DecoderWrapper(nn.Module):
     """Hunyuan text decoder using external ncnn-style xdRoPE cos/sin inputs."""
 
-    def __init__(self, text_model: nn.Module):
+    def __init__(
+        self,
+        text_model: nn.Module,
+        target_layer_ids: list[int] | None = None,
+    ):
         super().__init__()
-        self.input_layernorms = nn.ModuleList([layer.input_layernorm for layer in text_model.layers])
-        self.post_attention_layernorms = nn.ModuleList([layer.post_attention_layernorm for layer in text_model.layers])
-        self.query_layernorms = nn.ModuleList([layer.self_attn.query_layernorm for layer in text_model.layers])
-        self.key_layernorms = nn.ModuleList([layer.self_attn.key_layernorm for layer in text_model.layers])
-        self.q_projs = nn.ModuleList([self.export_linear(layer.self_attn.q_proj) for layer in text_model.layers])
-        self.k_projs = nn.ModuleList([self.export_linear(layer.self_attn.k_proj) for layer in text_model.layers])
-        self.v_projs = nn.ModuleList([self.export_linear(layer.self_attn.v_proj) for layer in text_model.layers])
-        self.o_projs = nn.ModuleList([self.export_linear(layer.self_attn.o_proj) for layer in text_model.layers])
-        self.gate_projs = nn.ModuleList([self.export_linear(layer.mlp.gate_proj) for layer in text_model.layers])
-        self.up_projs = nn.ModuleList([self.export_linear(layer.mlp.up_proj) for layer in text_model.layers])
-        self.down_projs = nn.ModuleList([self.export_linear(layer.mlp.down_proj) for layer in text_model.layers])
+        self.input_layernorms = nn.ModuleList(
+            [layer.input_layernorm for layer in text_model.layers]
+        )
+        self.post_attention_layernorms = nn.ModuleList(
+            [layer.post_attention_layernorm for layer in text_model.layers]
+        )
+        self.query_layernorms = nn.ModuleList(
+            [layer.self_attn.query_layernorm for layer in text_model.layers]
+        )
+        self.key_layernorms = nn.ModuleList(
+            [layer.self_attn.key_layernorm for layer in text_model.layers]
+        )
+        self.q_projs = nn.ModuleList(
+            [self.export_linear(layer.self_attn.q_proj) for layer in text_model.layers]
+        )
+        self.k_projs = nn.ModuleList(
+            [self.export_linear(layer.self_attn.k_proj) for layer in text_model.layers]
+        )
+        self.v_projs = nn.ModuleList(
+            [self.export_linear(layer.self_attn.v_proj) for layer in text_model.layers]
+        )
+        self.o_projs = nn.ModuleList(
+            [self.export_linear(layer.self_attn.o_proj) for layer in text_model.layers]
+        )
+        self.gate_projs = nn.ModuleList(
+            [self.export_linear(layer.mlp.gate_proj) for layer in text_model.layers]
+        )
+        self.up_projs = nn.ModuleList(
+            [self.export_linear(layer.mlp.up_proj) for layer in text_model.layers]
+        )
+        self.down_projs = nn.ModuleList(
+            [self.export_linear(layer.mlp.down_proj) for layer in text_model.layers]
+        )
         self.attn_scaling = [float(layer.self_attn.scaling) for layer in text_model.layers]
         self.norm = text_model.norm
         self.num_heads = int(text_model.config.num_attention_heads)
         self.num_kv_heads = int(text_model.config.num_key_value_heads)
         self.head_dim = int(text_model.config.head_dim)
         self.num_key_value_groups = self.num_heads // self.num_kv_heads
+        self.target_layer_ids = set(target_layer_ids or [])
 
     @staticmethod
     def export_linear(src: nn.Linear) -> nn.Linear:
@@ -156,7 +222,9 @@ class DecoderWrapper(nn.Module):
         # exports as a regular one-input InnerProduct without changing math.
         dst = nn.Linear(src.in_features, src.out_features, bias=True)
         dst.weight = src.weight
-        dst.bias = nn.Parameter(torch.zeros(src.out_features, dtype=src.weight.dtype, device=src.weight.device))
+        dst.bias = nn.Parameter(
+            torch.zeros(src.out_features, dtype=src.weight.dtype, device=src.weight.device)
+        )
         return dst
 
     def forward(
@@ -175,23 +243,30 @@ class DecoderWrapper(nn.Module):
         else:
             attn_mask = mask
 
-        # C++ runtime supplies ncnn-style half RoPE caches [seq, head_dim/2].
-        # HF rotate_half needs full [seq, head_dim] with the half repeated.
-        cos_full = torch.cat((cos_cache, cos_cache), dim=-1).unsqueeze(0).unsqueeze(0)
-        sin_full = torch.cat((sin_cache, sin_cache), dim=-1).unsqueeze(0).unsqueeze(0)
+        cos_cache = cos_cache.unsqueeze(0).unsqueeze(0)
+        sin_cache = sin_cache.unsqueeze(0).unsqueeze(0)
 
         hidden_states = embeds
+        target_features = []
         for i in range(len(self.q_projs)):
             residual = hidden_states
             x = self.input_layernorms[i](hidden_states)
 
             bsz, q_len, _ = x.shape
             q = self.q_projs[i](x).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-            k = self.k_projs[i](x).view(bsz, q_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
-            v = self.v_projs[i](x).view(bsz, q_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+            k = (
+                self.k_projs[i](x)
+                .view(bsz, q_len, self.num_kv_heads, self.head_dim)
+                .transpose(1, 2)
+            )
+            v = (
+                self.v_projs[i](x)
+                .view(bsz, q_len, self.num_kv_heads, self.head_dim)
+                .transpose(1, 2)
+            )
 
-            q = (q * cos_full) + (self.rotate_half(q) * sin_full)
-            k = (k * cos_full) + (self.rotate_half(k) * sin_full)
+            q = self.apply_rotary(q, cos_cache, sin_cache, True)
+            k = self.apply_rotary(k, cos_cache, sin_cache, True)
             q = self.query_layernorms[i](q)
             k = self.key_layernorms[i](k)
 
@@ -212,8 +287,12 @@ class DecoderWrapper(nn.Module):
             x = self.post_attention_layernorms[i](hidden_states)
             x = torch.nn.functional.silu(self.gate_projs[i](x)) * self.up_projs[i](x)
             hidden_states = residual + self.down_projs[i](x)
+            if i in self.target_layer_ids:
+                target_features.append(hidden_states)
 
         hidden_states = self.norm(hidden_states)
+        if target_features:
+            return hidden_states.squeeze(0), torch.cat(target_features, dim=-1).squeeze(0)
         return hidden_states.squeeze(0)
 
     @staticmethod
@@ -222,21 +301,156 @@ class DecoderWrapper(nn.Module):
         x2 = x[..., x.shape[-1] // 2 :]
         return torch.cat((-x2, x1), dim=-1)
 
+    @staticmethod
+    def apply_rotary(
+        x: torch.Tensor,
+        cos_cache: torch.Tensor,
+        sin_cache: torch.Tensor,
+        full_width_cache: bool,
+    ) -> torch.Tensor:
+        """Apply non-interleaved RoPE with stock ncnn arithmetic operators.
+
+        Keeping both output halves explicit prevents pnnx from folding this
+        graph into RotaryEmbed, whose Vulkan implementation assumes a
+        half-width cache. Full-width MRoPE may assign different axes to the two
+        halves, so reducing that cache is not equivalent.
+        """
+        half_dimension = x.shape[-1] // 2
+        x1 = x[..., :half_dimension]
+        x2 = x[..., half_dimension:]
+        if full_width_cache:
+            cos1 = cos_cache[..., :half_dimension]
+            cos2 = cos_cache[..., half_dimension:]
+            sin1 = sin_cache[..., :half_dimension]
+            sin2 = sin_cache[..., half_dimension:]
+        else:
+            cos1 = cos_cache
+            cos2 = cos_cache
+            sin1 = sin_cache
+            sin2 = sin_cache
+        return torch.cat((x1 * cos1 - x2 * sin1, x2 * cos2 + x1 * sin2), dim=-1)
+
+
+class DFlashWrapper(nn.Module):
+    """Five-layer HunyuanOCR DFlash draft with external cache-ready SDPA."""
+
+    def __init__(self, draft: nn.Module):
+        super().__init__()
+        self.fc = draft.fc
+        self.hidden_norm = draft.hidden_norm
+        self.norm = draft.norm
+        self.input_layernorms = nn.ModuleList([layer.input_layernorm for layer in draft.layers])
+        self.post_attention_layernorms = nn.ModuleList(
+            [layer.post_attention_layernorm for layer in draft.layers]
+        )
+        self.query_layernorms = nn.ModuleList([layer.self_attn.q_norm for layer in draft.layers])
+        self.key_layernorms = nn.ModuleList([layer.self_attn.k_norm for layer in draft.layers])
+        self.q_projs = nn.ModuleList(
+            [DecoderWrapper.export_linear(layer.self_attn.q_proj) for layer in draft.layers]
+        )
+        self.k_projs = nn.ModuleList(
+            [DecoderWrapper.export_linear(layer.self_attn.k_proj) for layer in draft.layers]
+        )
+        self.v_projs = nn.ModuleList(
+            [DecoderWrapper.export_linear(layer.self_attn.v_proj) for layer in draft.layers]
+        )
+        self.o_projs = nn.ModuleList(
+            [DecoderWrapper.export_linear(layer.self_attn.o_proj) for layer in draft.layers]
+        )
+        self.gate_projs = nn.ModuleList(
+            [DecoderWrapper.export_linear(layer.mlp.gate_proj) for layer in draft.layers]
+        )
+        self.up_projs = nn.ModuleList(
+            [DecoderWrapper.export_linear(layer.mlp.up_proj) for layer in draft.layers]
+        )
+        self.down_projs = nn.ModuleList(
+            [DecoderWrapper.export_linear(layer.mlp.down_proj) for layer in draft.layers]
+        )
+        config = draft.config
+        self.num_heads = int(config.num_attention_heads)
+        self.num_kv_heads = int(config.num_key_value_heads)
+        self.head_dim = int(config.head_dim)
+        self.num_key_value_groups = self.num_heads // self.num_kv_heads
+
+    def forward(
+        self,
+        noise_embeddings: torch.Tensor,
+        target_features: torch.Tensor,
+        mask: torch.Tensor,
+        cos_cache: torch.Tensor,
+        sin_cache: torch.Tensor,
+    ) -> torch.Tensor:
+        if noise_embeddings.dim() == 2:
+            noise_embeddings = noise_embeddings.unsqueeze(0)
+        if target_features.dim() == 2:
+            target_features = target_features.unsqueeze(0)
+        attn_mask = mask.unsqueeze(0).unsqueeze(0) if mask.dim() == 2 else mask
+        target_hidden = self.hidden_norm(self.fc(target_features))
+        cos_cache = cos_cache.unsqueeze(0).unsqueeze(0)
+        sin_cache = sin_cache.unsqueeze(0).unsqueeze(0)
+
+        hidden_states = noise_embeddings
+        for i in range(len(self.q_projs)):
+            residual = hidden_states
+            x = self.input_layernorms[i](hidden_states)
+            bsz, q_len, _ = x.shape
+            ctx_len = target_hidden.shape[1]
+            q = self.q_projs[i](x).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+            k_ctx = self.k_projs[i](target_hidden)
+            k_noise = self.k_projs[i](x)
+            v_ctx = self.v_projs[i](target_hidden)
+            v_noise = self.v_projs[i](x)
+            k = (
+                torch.cat((k_ctx, k_noise), dim=1)
+                .view(bsz, ctx_len + q_len, self.num_kv_heads, self.head_dim)
+                .transpose(1, 2)
+            )
+            v = (
+                torch.cat((v_ctx, v_noise), dim=1)
+                .view(bsz, ctx_len + q_len, self.num_kv_heads, self.head_dim)
+                .transpose(1, 2)
+            )
+
+            # Match the shipped dflash.py: Q/K norm precedes standard 1-D RoPE.
+            q = self.query_layernorms[i](q)
+            k = self.key_layernorms[i](k)
+            q_cos = cos_cache[..., -q_len:, :]
+            q_sin = sin_cache[..., -q_len:, :]
+            q = DecoderWrapper.apply_rotary(q, q_cos, q_sin, False)
+            k = DecoderWrapper.apply_rotary(k, cos_cache, sin_cache, False)
+            x = torch.nn.functional.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=attn_mask,
+                dropout_p=0.0,
+                scale=self.head_dim**-0.5,
+                enable_gqa=self.num_key_value_groups != 1,
+            )
+            x = x.transpose(1, 2).contiguous().reshape(bsz, q_len, -1)
+            hidden_states = residual + self.o_projs[i](x)
+            residual = hidden_states
+            x = self.post_attention_layernorms[i](hidden_states)
+            x = torch.nn.functional.silu(self.gate_projs[i](x)) * self.up_projs[i](x)
+            hidden_states = residual + self.down_projs[i](x)
+
+        return self.norm(hidden_states).squeeze(0)
+
 
 def require_transformers_class():
     try:
         import transformers  # type: ignore
     except Exception as exc:
         raise SystemExit(
-            "Transformers is not installed. Install the HunyuanOCR fork first:\n"
-            "  pip install 'git+https://github.com/huggingface/transformers@82a06db03535c49aa987719ed0746a76093b1ec4'\n"
+            "Transformers is not installed. Install the v1.5 export requirements first:\n"
+            "  pip install -r requirements/export.txt\n"
         ) from exc
 
     cls = getattr(transformers, "HunYuanVLForConditionalGeneration", None)
     if cls is None:
         raise SystemExit(
             f"Transformers {getattr(transformers, '__version__', '<unknown>')} does not expose "
-            "HunYuanVLForConditionalGeneration. Install the HunyuanOCR fork from the model README."
+            "HunYuanVLForConditionalGeneration. HunyuanOCR v1.5 requires transformers==5.13.0."
         )
     return cls
 
@@ -271,7 +485,9 @@ def pnnx_path_from_args(path: str | None) -> str:
     raise SystemExit("pnnx not found on PATH; install it or pass --pnnx")
 
 
-def run_pnnx(pnnx: str, pt: Path, inputshape: str, out_prefix: Path, inputshape2: str | None = None) -> None:
+def run_pnnx(
+    pnnx: str, pt: Path, inputshape: str, out_prefix: Path, inputshape2: str | None = None
+) -> None:
     intermediate_prefix = pt.with_suffix("")
     cmd = [
         pnnx,
@@ -291,6 +507,15 @@ def run_pnnx(pnnx: str, pt: Path, inputshape: str, out_prefix: Path, inputshape2
         cmd.insert(3, f"inputshape2={inputshape2}")
     print("[pnnx]", " ".join(cmd))
     subprocess.run(cmd, check=True)
+
+
+def require_stock_rotary_ops(out_prefix: Path) -> None:
+    param_path = Path(f"{out_prefix}.ncnn.param")
+    param_text = param_path.read_text(encoding="utf-8")
+    if "RotaryEmbed" in param_text:
+        raise RuntimeError(
+            f"{param_path} contains RotaryEmbed; expected stock arithmetic operators"
+        )
 
 
 def optimize_lm_head_ncnn(out_prefix: Path, hidden_size: int, vocab_size: int) -> None:
@@ -318,7 +543,8 @@ def optimize_lm_head_ncnn(out_prefix: Path, hidden_size: int, vocab_size: int) -
             "7767517",
             "2 2",
             "Input                    in0                      0 1 in0",
-            f"InnerProduct             lm_head                  1 1 in0 out0 0={vocab_size} 1=0 2={hidden_size * vocab_size}",
+            "InnerProduct             lm_head                  1 1 in0 out0 "
+            f"0={vocab_size} 1=0 2={hidden_size * vocab_size}",
             "",
         ]
     )
@@ -356,13 +582,21 @@ def intermediate_workspace(out_dir: Path, keep_intermediates: bool):
     return tempfile.TemporaryDirectory(prefix="hunyuan_ocr_export_")
 
 
-def write_model_json(model_path: Path, out_dir: Path) -> None:
+def write_model_json(
+    model_path: Path,
+    out_dir: Path,
+    dflash_config: dict[str, Any] | None = None,
+    *,
+    max_pixels: int = 262144,
+    min_pixels: int | None = None,
+) -> None:
     cfg = json.loads((model_path / "config.json").read_text(encoding="utf-8"))
     pre = json.loads((model_path / "preprocessor_config.json").read_text(encoding="utf-8"))
-    tokenizer_cfg = json.loads(
-        (model_path / "tokenizer_config.json").read_text(encoding="utf-8")
-    )
-    added_tokens = [v["content"] for _, v in sorted(tokenizer_cfg["added_tokens_decoder"].items(), key=lambda kv: int(kv[0]))]
+    tokenizer_cfg = json.loads((model_path / "tokenizer_config.json").read_text(encoding="utf-8"))
+    added_tokens = [
+        v["content"]
+        for _, v in sorted(tokenizer_cfg["added_tokens_decoder"].items(), key=lambda kv: int(kv[0]))
+    ]
     gen_cfg_path = model_path / "generation_config.json"
     eos_ids = [120007, 120020]
     if gen_cfg_path.exists():
@@ -380,9 +614,16 @@ def write_model_json(model_path: Path, out_dir: Path) -> None:
         "lm_head_param": "hunyuan_ocr_lm_head.ncnn.param",
         "lm_head_bin": "hunyuan_ocr_lm_head.ncnn.bin",
     }
+    if dflash_config is not None:
+        params.update(
+            {
+                "dflash_param": "hunyuan_ocr_dflash.ncnn.param",
+                "dflash_bin": "hunyuan_ocr_dflash.ncnn.bin",
+            }
+        )
     model_json = {
         "model_type": "hunyuan_ocr",
-        "model_format": "hunyuan_ocr_ncnn_v2",
+        "model_format": "hunyuan_ocr_ncnn_v3",
         "params": params,
         "tokenizer": {
             "type": "bbpe",
@@ -407,23 +648,39 @@ def write_model_json(model_path: Path, out_dir: Path) -> None:
             "special_token_id_begin": 120000,
             "rope": {
                 "type": "xdrope",
+                "cache_layout": "mrope_full",
                 "rope_theta": cfg["rope_theta"],
                 "rope_head_dim": cfg["head_dim"],
                 "alpha": cfg["rope_scaling"]["alpha"],
                 "xdrope_section": cfg["rope_scaling"]["xdrope_section"],
             },
             "vision": {
+                "patch_order": "merge_grouped",
                 "patch_size": pre["patch_size"],
                 "spatial_merge_size": pre["merge_size"],
                 "vision_hidden_size": cfg["vision_config"]["hidden_size"],
-                "min_pixels": pre["min_pixels"],
-                "max_pixels": min(pre["max_pixels"], 262144),
+                "min_pixels": pre["min_pixels"] if min_pixels is None else min_pixels,
+                "max_pixels": min(pre["max_pixels"], max_pixels),
                 "image_mean": pre["image_mean"],
                 "image_std": pre["image_std"],
             },
         },
     }
-    (out_dir / "model.json").write_text(json.dumps(model_json, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if dflash_config is not None:
+        draft_options = dflash_config["dflash_config"]
+        model_json["setting"]["dflash"] = {
+            "attention_layers": dflash_config["num_hidden_layers"],
+            "hidden_size": dflash_config["hidden_size"],
+            "head_dim": dflash_config["head_dim"],
+            "block_size": dflash_config["block_size"],
+            "split_causal_mask": True,
+            "mask_token_id": draft_options["mask_token_id"],
+            "target_layer_ids": draft_options["target_layer_ids"],
+            "rope_theta": dflash_config["rope_theta"],
+        }
+    (out_dir / "model.json").write_text(
+        json.dumps(model_json, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     print(f"[model.json] {out_dir / 'model.json'}")
 
 
@@ -435,7 +692,6 @@ def main() -> None:
         help="local Hugging Face model directory; downloads from the Hub when omitted",
     )
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID, help="Hugging Face model id")
-    parser.add_argument("--subfolder", default=DEFAULT_SUBFOLDER, help="model subfolder")
     parser.add_argument(
         "--out", type=Path, default=Path("assets/hunyuan_ocr"), help="output directory"
     )
@@ -448,14 +704,47 @@ def main() -> None:
         action="store_true",
         help="retain TorchScript and pnnx files under <out>/torchscript",
     )
+    parser.add_argument(
+        "--dflash",
+        action="store_true",
+        help="export the v1.5 DFlash draft graph and target intermediate features",
+    )
+    parser.add_argument(
+        "--max-pixels",
+        type=int,
+        default=262144,
+        help="clamp the preprocessed image area to this many pixels (default 262144); "
+        "the source processor value is used when it is smaller",
+    )
+    parser.add_argument(
+        "--min-pixels",
+        type=int,
+        default=None,
+        help="override the minimum preprocessed image area; defaults to the source processor value",
+    )
     args = parser.parse_args()
 
-    model_path = resolve_model_path(args.model_path, args.model_id, args.subfolder)
+    model_path = resolve_model_path(args.model_path, args.model_id)
+    draft_path = model_path / "dflash"
+    source_config = json.loads((model_path / "config.json").read_text(encoding="utf-8"))
+    if "text_config" not in source_config:
+        raise SystemExit("Only HunyuanOCR v1.5 model roots are supported")
+    dflash_config = None
+    if args.dflash:
+        if not (draft_path / "config.json").is_file():
+            raise SystemExit(f"--dflash requires the official draft model at {draft_path}")
+        dflash_config = json.loads((draft_path / "config.json").read_text(encoding="utf-8"))
     out_dir = args.out.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     export_tokenizer(model_path, out_dir)
-    write_model_json(model_path, out_dir)
+    write_model_json(
+        model_path,
+        out_dir,
+        dflash_config,
+        max_pixels=args.max_pixels,
+        min_pixels=args.min_pixels,
+    )
 
     if args.skip_pnnx:
         print("[done] --skip-pnnx requested; wrote tokenizer files and model.json only")
@@ -470,21 +759,64 @@ def main() -> None:
         trust_remote_code=True,
     ).eval()
 
-    core = first_attr(model, ["model", "language_model.model", "language_model"])
+    core = first_attr(
+        model,
+        [
+            "model.language_model",
+            "language_model.model",
+            "language_model",
+            "model",
+        ],
+    )
     if core is None:
         raise SystemExit(f"Could not locate text model. Top-level children: {child_names(model)}")
 
-    embed = first_attr(model, ["model.embed_tokens", "language_model.model.embed_tokens", "language_model.embed_tokens"])
+    embed = first_attr(
+        model,
+        [
+            "model.language_model.embed_tokens",
+            "model.embed_tokens",
+            "language_model.model.embed_tokens",
+            "language_model.embed_tokens",
+        ],
+    )
     if embed is None:
         raise SystemExit(f"Could not locate token embedding. Text children: {child_names(core)}")
 
     lm_head = first_attr(model, ["lm_head", "language_model.lm_head"])
-    vision = first_attr(model, ["vit", "vision_tower", "vision_model", "visual", "model.vision_tower", "model.vision_model"])
+    vision = first_attr(
+        model,
+        [
+            "vit",
+            "vision_tower",
+            "vision_model",
+            "visual",
+            "model.vision_tower",
+            "model.vision_model",
+        ],
+    )
     if vision is None:
-        raise SystemExit(f"Could not locate vision module. Top-level children: {child_names(model)}")
+        raise SystemExit(
+            f"Could not locate vision module. Top-level children: {child_names(model)}"
+        )
 
     cfg = json.loads((model_path / "config.json").read_text(encoding="utf-8"))
     hidden = int(cfg["hidden_size"])
+    target_layer_ids = (
+        dflash_config["dflash_config"]["target_layer_ids"] if dflash_config is not None else None
+    )
+    target_rope_width = int(cfg["head_dim"])
+    draft = None
+    if dflash_config is not None:
+        from transformers import AutoModel  # type: ignore
+
+        draft = AutoModel.from_pretrained(
+            str(draft_path),
+            attn_implementation="eager",
+            torch_dtype=torch.float32,
+            device_map="cpu",
+            trust_remote_code=True,
+        ).eval()
 
     pnnx = pnnx_path_from_args(args.pnnx)
     with intermediate_workspace(out_dir, args.keep_intermediates) as work_dir:
@@ -505,15 +837,30 @@ def main() -> None:
             pt_dir / "hunyuan_ocr_vision.pt",
         )
         trace_and_save(
-            DecoderWrapper(core),
+            DecoderWrapper(core, target_layer_ids),
             (
                 torch.zeros(8, hidden),
                 torch.zeros(8, 8),
-                torch.zeros(8, cfg["head_dim"] // 2),
-                torch.zeros(8, cfg["head_dim"] // 2),
+                torch.zeros(8, target_rope_width),
+                torch.zeros(8, target_rope_width),
             ),
             pt_dir / "hunyuan_ocr_text_decoder.pt",
         )
+        if draft is not None:
+            draft_hidden = int(dflash_config["hidden_size"])
+            target_hidden = hidden * len(target_layer_ids)
+            block_size = int(dflash_config["block_size"])
+            trace_and_save(
+                DFlashWrapper(draft),
+                (
+                    torch.zeros(block_size, draft_hidden),
+                    torch.zeros(8, target_hidden),
+                    torch.zeros(block_size, 8 + block_size),
+                    torch.zeros(8 + block_size, dflash_config["head_dim"] // 2),
+                    torch.zeros(8 + block_size, dflash_config["head_dim"] // 2),
+                ),
+                pt_dir / "hunyuan_ocr_dflash.pt",
+            )
 
         run_pnnx(
             pnnx,
@@ -542,14 +889,61 @@ def main() -> None:
         run_pnnx(
             pnnx,
             pt_dir / "hunyuan_ocr_text_decoder.pt",
-            f"[8,{hidden}]f32,[8,8]f32,[8,{cfg['head_dim'] // 2}]f32,[8,{cfg['head_dim'] // 2}]f32",
+            f"[8,{hidden}]f32,[8,8]f32,[8,{target_rope_width}]f32,[8,{target_rope_width}]f32",
             out_dir / "hunyuan_ocr_text_decoder",
-            inputshape2=f"[16,{hidden}]f32,[16,16]f32,[16,{cfg['head_dim'] // 2}]f32,[16,{cfg['head_dim'] // 2}]f32",
+            inputshape2=(
+                f"[16,{hidden}]f32,[16,16]f32,"
+                f"[16,{target_rope_width}]f32,"
+                f"[16,{target_rope_width}]f32"
+            ),
         )
+        require_stock_rotary_ops(out_dir / "hunyuan_ocr_text_decoder")
+        if draft is not None:
+            draft_hidden = int(dflash_config["hidden_size"])
+            target_hidden = hidden * len(target_layer_ids)
+            block_size = int(dflash_config["block_size"])
+            draft_head_half = int(dflash_config["head_dim"]) // 2
+            run_pnnx(
+                pnnx,
+                pt_dir / "hunyuan_ocr_dflash.pt",
+                f"[{block_size},{draft_hidden}]f32,[8,{target_hidden}]f32,"
+                f"[{block_size},{8 + block_size}]f32,"
+                f"[{8 + block_size},{draft_head_half}]f32,"
+                f"[{8 + block_size},{draft_head_half}]f32",
+                out_dir / "hunyuan_ocr_dflash",
+                inputshape2=(
+                    f"[{block_size},{draft_hidden}]f32,[16,{target_hidden}]f32,"
+                    f"[{block_size},{16 + block_size}]f32,"
+                    f"[{16 + block_size},{draft_head_half}]f32,"
+                    f"[{16 + block_size},{draft_head_half}]f32"
+                ),
+            )
+            require_stock_rotary_ops(out_dir / "hunyuan_ocr_dflash")
     subprocess.run(
-        [sys.executable, str(Path(__file__).with_name("add_kvcache.py")), str(out_dir / "hunyuan_ocr_text_decoder.ncnn.param")],
+        [
+            sys.executable,
+            str(Path(__file__).with_name("add_kvcache.py")),
+            str(out_dir / "hunyuan_ocr_text_decoder.ncnn.param"),
+            "--expected-sdpa",
+            str(cfg["num_hidden_layers"]),
+        ],
         check=True,
     )
+    if dflash_config is not None:
+        subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).with_name("add_kvcache.py")),
+                str(out_dir / "hunyuan_ocr_dflash.ncnn.param"),
+                "--after-input",
+                "in4",
+                "--mask-input",
+                "in2",
+                "--expected-sdpa",
+                str(dflash_config["num_hidden_layers"]),
+            ],
+            check=True,
+        )
 
 
 if __name__ == "__main__":

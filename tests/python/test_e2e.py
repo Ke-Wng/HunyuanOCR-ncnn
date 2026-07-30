@@ -85,7 +85,9 @@ def maybe_update_golden(sample: dict, report: dict) -> bool:
 
     golden_path = ROOT / "tests" / "data" / sample["golden"]
     golden = stable_golden_from_report(sample, report)
-    golden_path.write_text(json.dumps(golden, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    golden_path.write_text(
+        json.dumps(golden, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     return True
 
 
@@ -136,6 +138,7 @@ def test_e2e_fixed_sample(sample: dict, tmp_path: Path):
     assert report["profile"]["grid_h"] == golden["expected_grid_h"]
     assert report["profile"]["grid_w"] == golden["expected_grid_w"]
     assert report["profile"]["vision_tokens"] == golden["expected_vision_tokens"]
+    assert report["repetition_penalty"] == pytest.approx(1.03)
     assert report["generated_token_ids"], "model produced no token ids"
 
     if golden["expected_text"] == "" and golden["expected_token_ids"] == []:
