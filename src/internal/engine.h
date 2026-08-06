@@ -28,6 +28,7 @@ class Engine {
     std::shared_ptr<Context> generate(const std::shared_ptr<Context>& context,
                                       const GenerationOptions& options,
                                       const std::function<void(const std::string&)>& on_text);
+    std::string decode(const std::vector<int>& token_ids) const;
     const Profile& profile() const { return profile_; }
 
    private:
@@ -45,7 +46,6 @@ class Engine {
     std::shared_ptr<ncnn::Net> lm_head_net_;
     std::shared_ptr<ncnn::Net> dflash_net_;
     std::shared_ptr<BpeTokenizer> tokenizer_;
-    std::unordered_set<int> additional_special_ids_;
     HunyuanVisionPreprocessor preprocessor_;
 
     float rope_alpha_ = 1000.0F;
@@ -55,7 +55,6 @@ class Engine {
     int user_end_id_ = 120006;
     int image_start_id_ = 120118;
     int image_end_id_ = 120119;
-    int special_id_begin_ = 120000;
     std::unordered_set<int> eos_ids_;
     int attention_layers_ = 24;
     int hidden_size_ = 1024;

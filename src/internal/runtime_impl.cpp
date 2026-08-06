@@ -303,9 +303,6 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
         for (const auto& token : additional_special_tokens) {
             tokenizer_->AddAdditionalSpecialToken(token);
         }
-        for (int id : tokenizer_->additional_special_token_ids()) {
-            additional_special_ids_.insert(id);
-        }
         if (config["tokenizer"].contains("eos_ids")) {
             for (auto& v : config["tokenizer"]["eos_ids"]) {
                 eos_ids_.insert(v.get<int>());
@@ -362,7 +359,6 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
             user_end_id_ = config["setting"].value("user_end_token_id", 120006);
             image_start_id_ = config["setting"].value("image_start_token_id", 120118);
             image_end_id_ = config["setting"].value("image_end_token_id", 120119);
-            special_id_begin_ = config["setting"].value("special_token_id_begin", 120000);
 
             auto vision_cfg = config["setting"]["vision"];
             const int patch_size = vision_cfg.value("patch_size", 16);
@@ -508,6 +504,10 @@ std::shared_ptr<Context> Engine::prefill(const std::string& prompt_text,
         pos_h[i] = i;
         pos_t[i] = i;
     }
+    // The first image placeholder is the begin feature, the final one is the
+    // end feature; only the middle (grid_h/merge) * (grid_w/merge + 1)
+    // features use (column, row, 0).  This matches the processor's
+    // image_token_first + 1 grid start.
     const int start = first_image_index + 1;
     for (int row = 0; row < patch_height; ++row) {
         for (int column = 0; column < patch_width + 1; ++column) {
@@ -575,12 +575,20 @@ std::shared_ptr<Context> Engine::prefill(const std::string& prompt_text,
 #endif
     ctx->use_vulkan = use_vulkan_;
     ctx->current_token = next_token_id;
+    ctx->next_logits = logits.clone();
+    ctx->token_history.insert(token_ids.begin(), token_ids.end());
     ctx->position = sequence_length;
     ctx->generated_tokens.push_back(next_token_id);
     if (eos_ids_.count(next_token_id)) {
         ctx->stop_token = next_token_id;
+        ctx->stop_reason = StopReason::Eos;
     }
     return ctx;
+}
+
+std::string Engine::decode(const std::vector<int>& token_ids) const {
+    if (!tokenizer_) throw std::runtime_error("tokenizer is not initialized");
+    return tokenizer_->decode(token_ids, true);
 }
 
 std::shared_ptr<Context> Engine::generate(const std::shared_ptr<Context>& input_context,
@@ -592,23 +600,50 @@ std::shared_ptr<Context> Engine::generate(const std::shared_ptr<Context>& input_
     const auto generation_begin = std::chrono::steady_clock::now();
     auto ctx = input_context->clone();
     ctx->generated_tokens.clear();
-    std::unordered_set<int> history;
+    ctx->stop_token = -1;
+    ctx->stop_reason = StopReason::None;
+    std::unordered_set<int> history = ctx->token_history;
+    if (history.empty()) history.insert(ctx->current_token);
+    std::string streamed_text;
+
+    TokenSampleConfig sample_config;
+    sample_config.vocabulary_size = vocabulary_size_;
+    sample_config.temperature = options.temperature;
+    sample_config.top_p = options.top_p;
+    sample_config.top_k = options.top_k;
+    sample_config.repetition_penalty = options.repetition_penalty;
+    sample_config.do_sample = options.do_sample;
+
+    // Prefill already computed the logits for the first generated token.  Apply
+    // the same history-dependent sampling contract here as on later steps;
+    // choosing raw argmax in prefill would skip repetition_penalty entirely.
+    if (!ctx->next_logits.empty()) {
+        ctx->current_token = select_next_token(ctx->next_logits, history, sample_config);
+        ctx->next_logits.release();
+    }
     history.insert(ctx->current_token);
+
+    auto emit_decoded_prefix = [&]() {
+        if (!on_text) return;
+        const std::string decoded = tokenizer_->decode(ctx->generated_tokens, true);
+        if (decoded.size() >= streamed_text.size() &&
+            decoded.compare(0, streamed_text.size(), streamed_text) == 0) {
+            const std::string fragment = decoded.substr(streamed_text.size());
+            streamed_text = decoded;
+            if (!fragment.empty()) on_text(fragment);
+        }
+    };
 
     for (int step = 0; step < options.max_new_tokens; ++step) {
         const int token = ctx->current_token;
         ctx->generated_tokens.push_back(token);
         if (eos_ids_.count(token)) {
             ctx->stop_token = token;
+            ctx->stop_reason = StopReason::Eos;
             break;
         }
 
-        const bool is_special = token >= special_id_begin_ || additional_special_ids_.find(token) !=
-                                                                  additional_special_ids_.end();
-        if (!is_special) {
-            const std::string token_text = tokenizer_->decode({token}, true);
-            if (!token_text.empty() && on_text) on_text(token_text);
-        }
+        emit_decoded_prefix();
 
         ncnn::Mat cur_embed = llm_run_text_embed(*text_embed_net_, token);
 
@@ -639,18 +674,17 @@ std::shared_ptr<Context> Engine::generate(const std::shared_ptr<Context>& input_
             logits = llm_run_lm_head(*lm_head_net_, lm_head_in);
         }
 
-        TokenSampleConfig sample_config;
-        sample_config.vocabulary_size = vocabulary_size_;
-        sample_config.temperature = options.temperature;
-        sample_config.top_p = options.top_p;
-        sample_config.top_k = options.top_k;
-        sample_config.repetition_penalty = options.repetition_penalty;
-        sample_config.do_sample = options.do_sample;
         const int next_id = select_next_token(logits, history, sample_config);
 
         ctx->current_token = next_id;
         history.insert(next_id);
     }
+
+    if (ctx->stop_reason == StopReason::None &&
+        static_cast<int>(ctx->generated_tokens.size()) >= options.max_new_tokens) {
+        ctx->stop_reason = StopReason::MaxNewTokens;
+    }
+    emit_decoded_prefix();
 
     profile_.total_seconds += elapsed_seconds(generation_begin, std::chrono::steady_clock::now());
     return ctx;
@@ -669,13 +703,23 @@ std::shared_ptr<Context> Engine::generate_dflash(
     const auto generation_begin = std::chrono::steady_clock::now();
     auto ctx = input_context->clone();
     ctx->generated_tokens.clear();
-    std::unordered_set<int> history;
+    ctx->stop_token = -1;
+    ctx->stop_reason = StopReason::None;
+    std::unordered_set<int> history = ctx->token_history;
+    if (history.empty()) history.insert(ctx->current_token);
     Profile profile = profile_;
+    std::string streamed_text;
 
     TokenSampleConfig sample_config;
     sample_config.vocabulary_size = vocabulary_size_;
     sample_config.repetition_penalty = options.repetition_penalty;
     sample_config.do_sample = false;
+
+    if (!ctx->next_logits.empty()) {
+        ctx->current_token = select_next_token(ctx->next_logits, history, sample_config);
+        ctx->next_logits.release();
+    }
+    history.insert(ctx->current_token);
 
     // Draft proposals use raw greedy argmax (no repetition penalty), matching the
     // vLLM DFlash draft path. The repetition penalty is the arbiter's concern and is
@@ -688,11 +732,14 @@ std::shared_ptr<Context> Engine::generate_dflash(
     auto emit_token = [&](int token) {
         ctx->generated_tokens.push_back(token);
         history.insert(token);
-        const bool is_special = token >= special_id_begin_ || additional_special_ids_.find(token) !=
-                                                                  additional_special_ids_.end();
-        if (!is_special) {
-            const std::string token_text = tokenizer_->decode({token}, true);
-            if (!token_text.empty() && on_text) on_text(token_text);
+        if (on_text) {
+            const std::string decoded = tokenizer_->decode(ctx->generated_tokens, true);
+            if (decoded.size() >= streamed_text.size() &&
+                decoded.compare(0, streamed_text.size(), streamed_text) == 0) {
+                const std::string fragment = decoded.substr(streamed_text.size());
+                streamed_text = decoded;
+                if (!fragment.empty()) on_text(fragment);
+            }
         }
     };
     auto commit_final_token = [&](int token) {
@@ -735,10 +782,12 @@ std::shared_ptr<Context> Engine::generate_dflash(
         emit_token(current);
         if (eos_ids_.count(current)) {
             ctx->stop_token = current;
+            ctx->stop_reason = StopReason::Eos;
             break;
         }
         if (static_cast<int>(ctx->generated_tokens.size()) >= options.max_new_tokens) {
             commit_final_token(current);
+            ctx->stop_reason = StopReason::MaxNewTokens;
             break;
         }
 
@@ -852,7 +901,10 @@ std::shared_ptr<Context> Engine::generate_dflash(
         for (int i = 1; i <= commit.emitted_drafts; ++i) {
             emit_token(verification_ids[i]);
         }
-        if (commit.accepted_eos) ctx->stop_token = commit.stop_token;
+        if (commit.accepted_eos) {
+            ctx->stop_token = commit.stop_token;
+            ctx->stop_reason = StopReason::Eos;
+        }
         profile.dflash_accepted_tokens += commit.emitted_drafts;
         ctx->position += commit.commit_count;
         ctx->target_features = target_features.row_range(0, commit.commit_count).clone();
@@ -868,8 +920,15 @@ std::shared_ptr<Context> Engine::generate_dflash(
         history = std::move(verified_history);
         if (commit.accepted_eos ||
             static_cast<int>(ctx->generated_tokens.size()) >= options.max_new_tokens) {
+            if (ctx->stop_reason == StopReason::None) {
+                ctx->stop_reason = StopReason::MaxNewTokens;
+            }
             break;
         }
+    }
+    if (ctx->stop_reason == StopReason::None &&
+        static_cast<int>(ctx->generated_tokens.size()) >= options.max_new_tokens) {
+        ctx->stop_reason = StopReason::MaxNewTokens;
     }
     profile.total_seconds += elapsed_seconds(generation_begin, std::chrono::steady_clock::now());
     profile_ = profile;

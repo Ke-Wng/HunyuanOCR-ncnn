@@ -23,9 +23,15 @@ struct GenerationOptions {
     int max_new_tokens = 1024;
     float temperature = 0.0F;
     float top_p = 1.0F;
-    int top_k = 1;
-    float repetition_penalty = 1.03F;
+    int top_k = -1;
+    float repetition_penalty = 1.08F;
     bool do_sample = false;
+};
+
+enum class StopReason {
+    None,
+    Eos,
+    MaxNewTokens,
 };
 
 struct Profile {
@@ -58,11 +64,17 @@ struct Profile {
 };
 
 struct Result {
+    // `raw_text` is the complete tokenizer decode of `token_ids`; `final_text` is
+    // the deterministic post-processing layer.  `text` is kept as the public
+    // compatibility alias for `final_text`.
     std::string text;
+    std::string raw_text;
+    std::string final_text;
     std::vector<int> token_ids;
     int current_token = 0;
     int stop_token = -1;
     int position = 0;
+    StopReason stop_reason = StopReason::None;
     Profile profile;
 };
 

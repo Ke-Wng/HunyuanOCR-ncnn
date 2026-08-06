@@ -6,8 +6,11 @@
 #endif
 
 #include <memory>
+#include <unordered_set>
 #include <utility>
 #include <vector>
+
+#include "hunyuan_ocr/runtime.h"
 
 namespace hunyuan_ocr::internal {
 
@@ -28,8 +31,11 @@ struct Context {
 #endif
         copy->use_vulkan = use_vulkan;
         copy->current_token = current_token;
+        copy->next_logits = next_logits;
         copy->position = position;
         copy->stop_token = stop_token;
+        copy->stop_reason = stop_reason;
+        copy->token_history = token_history;
         copy->generated_tokens = generated_tokens;
         return copy;
     }
@@ -52,8 +58,11 @@ struct Context {
 #endif
     bool use_vulkan = false;
     int current_token = 0;
+    ncnn::Mat next_logits;
     int position = 0;
     int stop_token = -1;
+    hunyuan_ocr::StopReason stop_reason = hunyuan_ocr::StopReason::None;
+    std::unordered_set<int> token_history;
     std::vector<int> generated_tokens;
 };
 

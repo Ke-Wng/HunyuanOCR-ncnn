@@ -8,6 +8,8 @@ include(CTest)
 
 option(HUNYUAN_OCR_BUILD_CLI "Build the hunyuan-ocr command-line application" ON)
 option(HUNYUAN_OCR_USE_SYSTEM_NCNN "Use an installed ncnn package" OFF)
+option(HUNYUAN_OCR_REQUIRE_LIBJPEG
+       "Fail configuration when the strict Pillow-compatible JPEG decoder is unavailable" OFF)
 
 if(HUNYUAN_OCR_USE_SYSTEM_NCNN)
     find_package(ncnn REQUIRED)
@@ -28,6 +30,13 @@ else()
 endif()
 find_package(Threads REQUIRED)
 find_package(nlohmann_json REQUIRED)
+find_package(JPEG QUIET)
+
+if(HUNYUAN_OCR_REQUIRE_LIBJPEG AND NOT JPEG_FOUND)
+    message(FATAL_ERROR
+        "HUNYUAN_OCR_REQUIRE_LIBJPEG=ON but no JPEG development library was found; "
+        "strict official text validation requires libjpeg")
+endif()
 
 add_library(hunyuan_ocr_ncnn_runtime
     src/runtime.cpp
@@ -61,6 +70,15 @@ target_include_directories(hunyuan_ocr_ncnn_runtime SYSTEM PRIVATE
 target_link_libraries(hunyuan_ocr_ncnn_runtime
     PRIVATE ncnn Threads::Threads nlohmann_json::nlohmann_json
 )
+
+if(JPEG_FOUND)
+    target_compile_definitions(hunyuan_ocr_ncnn_runtime PRIVATE HUNYUAN_OCR_HAS_JPEG=1)
+    target_link_libraries(hunyuan_ocr_ncnn_runtime PRIVATE JPEG::JPEG)
+    message(STATUS "Image decoder: libjpeg")
+else()
+    target_compile_definitions(hunyuan_ocr_ncnn_runtime PRIVATE HUNYUAN_OCR_HAS_JPEG=0)
+    message(STATUS "Image decoder: stb_image (libjpeg development library not found)")
+endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(hunyuan_ocr_ncnn_runtime PRIVATE -Wall -Wextra -Wpedantic)

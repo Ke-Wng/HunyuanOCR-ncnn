@@ -17,7 +17,7 @@ struct Arguments {
     int threads = 4;
     int max_new_tokens = 1024;
     int vulkan_device = -1;
-    float repetition_penalty = 1.03F;
+    float repetition_penalty = 1.08F;
     hunyuan_ocr::VulkanPrecision vulkan_precision = hunyuan_ocr::VulkanPrecision::Fp32;
     bool prefill_only = false;
     bool profile = false;
@@ -132,6 +132,18 @@ json profile_json(const hunyuan_ocr::Profile& profile) {
     };
 }
 
+const char* stop_reason_name(hunyuan_ocr::StopReason reason) {
+    switch (reason) {
+        case hunyuan_ocr::StopReason::Eos:
+            return "eos";
+        case hunyuan_ocr::StopReason::MaxNewTokens:
+            return "max_new_tokens";
+        case hunyuan_ocr::StopReason::None:
+            return "none";
+    }
+    return "none";
+}
+
 void print_profile(const hunyuan_ocr::Profile& profile) {
     std::fprintf(stderr,
                  "backend=%s precision=%s vision_storage=%s decoder_storage=%s "
@@ -168,13 +180,20 @@ void write_json(const std::string& path, const Arguments& arguments,
          arguments.vulkan_precision == hunyuan_ocr::VulkanPrecision::Mixed ? "mixed" : "fp32"},
         {"max_new_tokens", arguments.max_new_tokens},
         {"repetition_penalty", arguments.repetition_penalty},
+        {"temperature", 0.0F},
+        {"top_p", 1.0F},
+        {"top_k", -1},
+        {"do_sample", false},
         {"prefill_only", arguments.prefill_only},
         {"dflash", arguments.dflash},
         {"profile", profile_json(result.profile)},
-        {"generated_text", result.text},
+        {"generated_text", result.raw_text},
+        {"raw_text", result.raw_text},
+        {"final_text", result.final_text},
         {"generated_token_ids", result.token_ids},
         {"cur_token", result.current_token},
         {"stop_token_id", result.stop_token},
+        {"stop_reason", stop_reason_name(result.stop_reason)},
         {"position_id", result.position},
     };
     std::ofstream output(path);

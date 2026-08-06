@@ -6,22 +6,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from tools.validation.metrics import metrics
+
 ROOT = Path(__file__).resolve().parents[2]
 ASSETS = ROOT / "assets" / "hunyuan_ocr"
 MANIFEST = ROOT / "tests" / "data" / "reference_images.json"
-
-
-def metrics(actual: np.ndarray, expected: np.ndarray) -> dict[str, float]:
-    diff = actual.astype(np.float64) - expected.astype(np.float64)
-    expected64 = expected.astype(np.float64).reshape(-1)
-    actual64 = actual.astype(np.float64).reshape(-1)
-    denom = np.linalg.norm(actual64) * np.linalg.norm(expected64)
-    return {
-        "max_abs": float(np.max(np.abs(diff))),
-        "mean_abs": float(np.mean(np.abs(diff))),
-        "relative_l2": float(np.linalg.norm(diff.reshape(-1)) / np.linalg.norm(expected64)),
-        "cosine": float(np.dot(actual64, expected64) / denom),
-    }
 
 
 @pytest.mark.skipif(

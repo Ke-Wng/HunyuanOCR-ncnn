@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -10,6 +11,7 @@
 #include "internal/dflash_commit.h"
 #include "internal/image_preprocessor.h"
 #include "internal/text_runtime.h"
+#include "internal/tokenizer/bpe_tokenizer.h"
 #include "internal/xdrope.h"
 
 using namespace hunyuan_ocr::internal;
@@ -170,7 +172,7 @@ void test_merge_grouped_patch_order() {
 
     const HunyuanVisionInput output = HunyuanVisionPreprocessor(config).process(bgr);
     const int expected_source_patches[16] = {
-        0, 1, 4, 5, 2, 3, 6, 7, 8, 9, 12, 13, 10, 11, 14, 15,
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
     };
     for (int destination = 0; destination < 16; ++destination) {
         const int y = (destination / 4) * 16 + 8;
@@ -188,6 +190,9 @@ void test_runtime_option_defaults() {
     require_true(options.vulkan_precision == hunyuan_ocr::VulkanPrecision::Fp32,
                  "Vulkan FP32 must remain the default precision");
     require_true(!options.enable_dflash, "DFlash must remain explicit opt-in");
+    const hunyuan_ocr::GenerationOptions generation;
+    require_close(generation.repetition_penalty, 1.08F, 0.0F, "official greedy repetition penalty");
+    require_true(generation.top_k == -1, "official greedy top-k sentinel");
     require_true(hunyuan_ocr::Profile{}.dflash_storage == "disabled",
                  "DFlash storage must report disabled by default");
 }
@@ -203,6 +208,28 @@ void test_standard_rope() {
     require_close(cosine.row(1)[0], std::cos(1.0F), 1e-6F, "standard RoPE first frequency");
 }
 
+void test_bbpe_decodes_split_utf8_sequence() {
+    const std::string vocab_path = "/tmp/hunyuan_ocr_runtime_core_vocab.txt";
+    const std::string merges_path = "/tmp/hunyuan_ocr_runtime_core_merges.txt";
+    {
+        std::ofstream vocab(vocab_path, std::ios::binary);
+        vocab << "\xC3\x83\n\xC2\xA9\n";  // GPT-2 byte tokens for C3 A9 (é).
+        std::ofstream merges(merges_path, std::ios::binary);
+        merges << "#version: 0.2\n";
+    }
+
+    const SpecialTokensConfig spec;
+    const BpeTokenizer tokenizer =
+        BpeTokenizer::LoadFromFiles(vocab_path, merges_path, spec, false, false, true);
+    const std::string expected = "\xC3\xA9";
+    require_true(tokenizer.decode({0, 1}) == expected,
+                 "BBPE must decode a UTF-8 codepoint across token boundaries");
+    require_true(tokenizer.decode({0}) != expected,
+                 "a partial BBPE byte sequence must not be treated as a complete codepoint");
+    std::remove(vocab_path.c_str());
+    std::remove(merges_path.c_str());
+}
+
 }  // namespace
 
 int main() {
@@ -215,6 +242,7 @@ int main() {
     test_merge_grouped_patch_order();
     test_runtime_option_defaults();
     test_standard_rope();
+    test_bbpe_decodes_split_utf8_sequence();
     std::printf("runtime core tests passed\n");
     return 0;
 }

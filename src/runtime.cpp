@@ -1,5 +1,6 @@
 #include "hunyuan_ocr/runtime.h"
 
+#include <cstddef>
 #include <stdexcept>
 #include <utility>
 
@@ -9,14 +10,37 @@
 namespace hunyuan_ocr {
 namespace {
 
+std::string clean_repeated_substrings(const std::string& text) {
+    constexpr size_t kMinTextLength = 2000;
+    constexpr size_t kMinRepeats = 10;
+    if (text.size() < kMinTextLength) return text;
+
+    for (size_t unit_length = 2; unit_length <= text.size() / kMinRepeats; ++unit_length) {
+        const std::string candidate = text.substr(text.size() - unit_length);
+        size_t count = 0;
+        auto end = static_cast<std::ptrdiff_t>(text.size() - unit_length);
+        while (end >= 0 && text.compare(static_cast<size_t>(end), unit_length, candidate) == 0) {
+            ++count;
+            end -= static_cast<std::ptrdiff_t>(unit_length);
+        }
+        if (count >= kMinRepeats) {
+            return text.substr(0, text.size() - unit_length * (count - 1));
+        }
+    }
+    return text;
+}
+
 Result make_result(const std::shared_ptr<internal::Context>& context, const Profile& profile,
-                   std::string text = {}) {
+                   std::string raw_text = {}) {
     Result result;
-    result.text = std::move(text);
+    result.raw_text = std::move(raw_text);
+    result.final_text = clean_repeated_substrings(result.raw_text);
+    result.text = result.final_text;
     result.token_ids = context->generated_tokens;
     result.current_token = context->current_token;
     result.stop_token = context->stop_token;
     result.position = context->position;
+    result.stop_reason = context->stop_reason;
     result.profile = profile;
     return result;
 }
@@ -60,8 +84,8 @@ Result Runtime::recognize(const std::string& image_path, const std::string& prom
     if (options.top_p <= 0.0F || options.top_p > 1.0F) {
         throw std::invalid_argument("top_p must be in (0, 1]");
     }
-    if (options.top_k < 0) {
-        throw std::invalid_argument("top_k must be non-negative");
+    if (options.top_k < -1) {
+        throw std::invalid_argument("top_k must be -1, zero, or a positive integer");
     }
     if (options.repetition_penalty <= 0.0F) {
         throw std::invalid_argument("repetition_penalty must be positive");
@@ -76,12 +100,11 @@ Result Runtime::recognize(const std::string& image_path, const std::string& prom
     }
 
     auto context = impl_->engine.prefill(prompt, image);
-    std::string text;
-    auto generated = impl_->engine.generate(context, options, [&](const std::string& fragment) {
-        text += fragment;
-        if (on_text) on_text(fragment);
-    });
-    return make_result(generated, impl_->engine.profile(), std::move(text));
+    auto generated = impl_->engine.generate(context, options, on_text);
+    // Decode the complete sequence once.  BBPE tokens may split a UTF-8 codepoint,
+    // so concatenating one-token decodes is not equivalent to decoding the sequence.
+    return make_result(generated, impl_->engine.profile(),
+                       impl_->engine.decode(generated->generated_tokens));
 }
 
 }  // namespace hunyuan_ocr

@@ -446,11 +446,13 @@ def require_transformers_class():
             "  pip install -r requirements/export.txt\n"
         ) from exc
 
+    version = str(getattr(transformers, "__version__", "<unknown>"))
     cls = getattr(transformers, "HunYuanVLForConditionalGeneration", None)
-    if cls is None:
+    if cls is None or version.split("+")[0] != "5.13.0":
         raise SystemExit(
-            f"Transformers {getattr(transformers, '__version__', '<unknown>')} does not expose "
-            "HunYuanVLForConditionalGeneration. HunyuanOCR v1.5 requires transformers==5.13.0."
+            f"Transformers {version} is not the pinned HunyuanOCR implementation or does not "
+            "expose HunYuanVLForConditionalGeneration. HunyuanOCR v1.5 requires "
+            "transformers==5.13.0."
         )
     return cls
 

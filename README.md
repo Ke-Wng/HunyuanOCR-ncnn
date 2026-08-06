@@ -13,6 +13,7 @@ v1.5 的 ncnn 推理实现，支持 CPU FP32、Vulkan FP32/Mixed 与 DFlash 贪�
 - CMake 3.16+
 - 支持 OpenMP 的 C++17 编译器
 - nlohmann_json CMake package
+- libjpeg-turbo development package
 - Vulkan 驱动（仅 GPU 推理需要）
 - Python 3.10+（仅导出模型与运行 Python 测试时需要）
 
@@ -116,6 +117,34 @@ DFlash 当前只接受贪心配置，支持 CPU FP32、Vulkan FP32 和 Vulkan Mi
 ```
 
 使用 `./build/hunyuan-ocr --help` 查看全部参数。
+
+## 验证
+
+运行默认 Python 测试：
+
+```bash
+.venv/bin/pytest -q tests/python
+```
+
+需要模型和导出资产时，可运行视觉重放：
+
+```bash
+HUNYUAN_OCR_RUN_REPLAY=1 .venv/bin/pytest -q tests/python/test_vision.py
+HUNYUAN_OCR_RUN_IMAGE_REPLAY=1 .venv/bin/pytest -q tests/python/test_image_vision.py
+```
+
+严格最终文本验证需要先生成官方完整序列 golden，再运行：
+
+```bash
+.venv/bin/python -m tools.validation.generate_e2e_reference \
+  --out-root tests/data --model-path /path/to/HunyuanOCR
+HUNYUAN_OCR_RUN_E2E=1 HUNYUAN_OCR_RUN_STRICT_E2E=1 \
+HUNYUAN_OCR_E2E_PROFILES=cpu_ar \
+.venv/bin/pytest -q tests/python/test_e2e.py -k strict_profile
+```
+
+严格验证会比较完整 token 序列、文本和停止状态；Vulkan profile 需先用
+`tools.validation.capture_runtime_goldens` 生成对应 golden。
 
 ## C++ 库
 

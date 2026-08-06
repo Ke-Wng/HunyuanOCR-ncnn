@@ -87,8 +87,8 @@ HunyuanVisionInput HunyuanVisionPreprocessor::process(const ncnn::Mat& bgr) cons
     const int merge = config_.spatial_merge_size;
     int destination_patch = 0;
     for (int block_y = 0; block_y < result.grid_h / merge; ++block_y) {
-        for (int block_x = 0; block_x < result.grid_w / merge; ++block_x) {
-            for (int inner_y = 0; inner_y < merge; ++inner_y) {
+        for (int inner_y = 0; inner_y < merge; ++inner_y) {
+            for (int block_x = 0; block_x < result.grid_w / merge; ++block_x) {
                 for (int inner_x = 0; inner_x < merge; ++inner_x) {
                     const int source_patch_y = block_y * merge + inner_y;
                     const int source_patch_x = block_x * merge + inner_x;

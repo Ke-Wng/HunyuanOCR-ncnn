@@ -1,0 +1,80 @@
+[
+  {
+    "id": "subtitle_movie",
+    "image": "tests/data/reference_images/subtitle_movie.jpg",
+    "task_type": "structured_parse",
+    "prompt": "提取图中的文字。",
+    "max_new_tokens": 32768,
+    "repetition_penalty": 1.08,
+    "golden": "strict_expected/subtitle_movie.json",
+    "profile_goldens": {
+      "vulkan_fp32_ar": "strict_expected/vulkan_fp32_ar/subtitle_movie.json",
+      "vulkan_mixed_ar": "strict_expected/vulkan_mixed_ar/subtitle_movie.json"
+    }
+  },
+  {
+    "id": "invoice_receipt",
+    "image": "tests/data/reference_images/invoice_receipt.jpg",
+    "task_type": "structured_parse",
+    "prompt": "提取图中的文字。",
+    "max_new_tokens": 32768,
+    "repetition_penalty": 1.08,
+    "golden": "strict_expected/invoice_receipt.json",
+    "profile_goldens": {
+      "vulkan_fp32_ar": "strict_expected/vulkan_fp32_ar/invoice_receipt.json",
+      "vulkan_mixed_ar": "strict_expected/vulkan_mixed_ar/invoice_receipt.json"
+    }
+  },
+  {
+    "id": "calligraphy_vase",
+    "image": "tests/data/reference_images/calligraphy_vase.png",
+    "task_type": "structured_parse",
+    "prompt": "提取图中的文字。",
+    "max_new_tokens": 32768,
+    "repetition_penalty": 1.08,
+    "golden": "strict_expected/calligraphy_vase.json",
+    "profile_goldens": {
+      "vulkan_fp32_ar": "strict_expected/vulkan_fp32_ar/calligraphy_vase.json",
+      "vulkan_mixed_ar": "strict_expected/vulkan_mixed_ar/calligraphy_vase.json"
+    }
+  },
+  {
+    "id": "schedule_table",
+    "image": "tests/data/reference_images/schedule_table.png",
+    "task_type": "table",
+    "prompt": "把图中的表格解析为HTML。",
+    "max_new_tokens": 32768,
+    "repetition_penalty": 1.08,
+    "golden": "strict_expected/schedule_table.json",
+    "profile_goldens": {
+      "vulkan_fp32_ar": "strict_expected/vulkan_fp32_ar/schedule_table.json",
+      "vulkan_mixed_ar": "strict_expected/vulkan_mixed_ar/schedule_table.json"
+    }
+  },
+  {
+    "id": "flowchart",
+    "image": "tests/data/reference_images/flowchart.png",
+    "task_type": "chart_parse",
+    "prompt": "解析图中的图表，对于流程图使用Mermaid格式表示，其他图表使用Markdown格式表示。",
+    "max_new_tokens": 32768,
+    "repetition_penalty": 1.08,
+    "golden": "strict_expected/flowchart.json",
+    "profile_goldens": {
+      "vulkan_fp32_ar": "strict_expected/vulkan_fp32_ar/flowchart.json",
+      "vulkan_mixed_ar": "strict_expected/vulkan_mixed_ar/flowchart.json"
+    }
+  },
+  {
+    "id": "document_page",
+    "image": "tests/data/reference_images/document_page.png",
+    "task_type": "doc_parse",
+    "prompt": "提取文档图片中正文的所有信息用markdown格式表示，其中页眉、页脚部分忽略，表格用html格式表达，文档中公式用latex格式表示，按照阅读顺序组织进行解析。",
+    "max_new_tokens": 32768,
+    "repetition_penalty": 1.08,
+    "golden": "strict_expected/document_page.json",
+    "profile_goldens": {
+      "vulkan_fp32_ar": "strict_expected/vulkan_fp32_ar/document_page.json",
+      "vulkan_mixed_ar": "strict_expected/vulkan_mixed_ar/document_page.json"
+    }
+  }
+]
