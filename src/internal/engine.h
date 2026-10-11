@@ -19,10 +19,16 @@
 
 namespace hunyuan_ocr::internal {
 
+#if NCNN_VULKAN
+class KvCacheVkAllocator;
+#endif
+
 class Engine {
    public:
     Engine(const std::string& model_directory, const RuntimeOptions& options);
     ~Engine();
+    Engine(const Engine&) = delete;
+    Engine& operator=(const Engine&) = delete;
 
     std::shared_ptr<Context> prefill(const std::string& prompt, const ncnn::Mat& image);
     std::shared_ptr<Context> generate(const std::shared_ptr<Context>& context,
@@ -77,7 +83,7 @@ class Engine {
     std::string dflash_storage_ = "disabled";
 #if NCNN_VULKAN
     ncnn::VulkanDevice* vkdev_ = nullptr;
-    ncnn::VkAllocator* blob_vkallocator_ = nullptr;
+    KvCacheVkAllocator* blob_vkallocator_ = nullptr;
     ncnn::VkAllocator* staging_vkallocator_ = nullptr;
 #endif
     Profile profile_;
