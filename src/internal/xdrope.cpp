@@ -14,9 +14,16 @@ void generate_hunyuan_mrope_cos_sin(const std::vector<int>* positions, int seque
         throw std::invalid_argument("invalid mrope dimensions");
     }
 
+    // `positions` holds one vector per axis and callers pass exactly four.
+    if (sections.size() > 4) {
+        throw std::invalid_argument("mrope supports at most 4 sections");
+    }
     const int half_dimension = head_dimension / 2;
     int section_sum = 0;
-    for (int section : sections) section_sum += section;
+    for (int section : sections) {
+        if (section < 0) throw std::invalid_argument("mrope sections must be non-negative");
+        section_sum += section;
+    }
     if (section_sum != half_dimension) {
         throw std::invalid_argument("mrope sections must sum to head_dimension/2");
     }

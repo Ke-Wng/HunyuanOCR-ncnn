@@ -5,10 +5,16 @@
 #include <csetjmp>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <fstream>
+#include <memory>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 #if HUNYUAN_OCR_HAS_JPEG
+#include <jerror.h>
 #include <jpeglib.h>
 #endif
 
@@ -94,11 +100,93 @@ namespace {
 struct JpegErrorManager {
     jpeg_error_mgr public_error;
     std::jmp_buf jump_buffer;
+    bool premature_end;  // libjpeg only warns on truncated data and pads the image with gray
 };
 
-void jpeg_error_exit(j_common_ptr common) {
+[[noreturn]] void jpeg_error_exit(j_common_ptr common) {
     auto* error = reinterpret_cast<JpegErrorManager*>(common->err);
     std::longjmp(error->jump_buffer, 1);
+}
+
+void jpeg_emit_message(j_common_ptr common, int message_level) {
+    auto* error = reinterpret_cast<JpegErrorManager*>(common->err);
+    if (message_level < 0 && error->public_error.msg_code == JWRN_JPEG_EOF) {
+        error->premature_end = true;
+    }
+}
+
+struct JpegPixels {
+    int width = 0;
+    int height = 0;
+    unsigned char* bgr = nullptr;  // malloc'd, width * height * 3
+};
+
+// Decodes into a malloc'd BGR buffer.  A libjpeg error longjmps back into this function, so it
+// holds only trivially destructible objects (no ncnn::Mat, std::vector or std::string) and
+// reports failures through `message`.  Returns false on failure and never leaks.
+bool decode_jpeg(FILE* file, JpegPixels* pixels, char* message, size_t message_size) {
+    jpeg_decompress_struct decoder{};
+    JpegErrorManager error{};
+    unsigned char* volatile bgr = nullptr;
+    unsigned char* volatile row = nullptr;
+    decoder.err = jpeg_std_error(&error.public_error);
+    error.public_error.error_exit = jpeg_error_exit;
+    error.public_error.emit_message = jpeg_emit_message;
+    if (setjmp(error.jump_buffer) != 0) {
+        error.public_error.format_message(reinterpret_cast<j_common_ptr>(&decoder), message);
+        jpeg_destroy_decompress(&decoder);
+        std::free(bgr);
+        std::free(row);
+        return false;
+    }
+
+    jpeg_create_decompress(&decoder);
+    jpeg_stdio_src(&decoder, file);
+    jpeg_read_header(&decoder, TRUE);
+    decoder.out_color_space = JCS_RGB;
+    jpeg_start_decompress(&decoder);
+
+    const size_t width = decoder.output_width;
+    const size_t height = decoder.output_height;
+    bgr = static_cast<unsigned char*>(std::malloc(width * height * 3));
+    row = static_cast<unsigned char*>(std::malloc(width * 3));
+    if (!bgr || !row || decoder.output_components != 3) {
+        std::snprintf(
+            message, message_size, "%s",
+            decoder.output_components != 3 ? "unsupported JPEG component count" : "out of memory");
+        jpeg_destroy_decompress(&decoder);
+        std::free(bgr);
+        std::free(row);
+        return false;
+    }
+    while (decoder.output_scanline < decoder.output_height) {
+        unsigned char* row_ptr = row;
+        if (jpeg_read_scanlines(&decoder, &row_ptr, 1) != 1) {
+            std::snprintf(message, message_size, "%s", "failed to read JPEG scanline");
+            jpeg_destroy_decompress(&decoder);
+            std::free(bgr);
+            std::free(row);
+            return false;
+        }
+        unsigned char* destination = bgr + (decoder.output_scanline - 1) * width * 3;
+        for (size_t x = 0; x < width; ++x) {
+            destination[x * 3 + 0] = row[x * 3 + 2];
+            destination[x * 3 + 1] = row[x * 3 + 1];
+            destination[x * 3 + 2] = row[x * 3 + 0];
+        }
+    }
+    jpeg_finish_decompress(&decoder);
+    jpeg_destroy_decompress(&decoder);
+    std::free(row);
+    if (error.premature_end) {
+        std::snprintf(message, message_size, "%s", "JPEG file is truncated");
+        std::free(bgr);
+        return false;
+    }
+    pixels->width = static_cast<int>(width);
+    pixels->height = static_cast<int>(height);
+    pixels->bgr = bgr;
+    return true;
 }
 
 bool is_jpeg_file(const std::string& image_path) {
@@ -108,52 +196,26 @@ bool is_jpeg_file(const std::string& image_path) {
            header[0] == 0xff && header[1] == 0xd8;
 }
 
-ncnn::Mat load_jpeg(const std::string& image_path) {
-    FILE* file = std::fopen(image_path.c_str(), "rb");
-    if (!file) return ncnn::Mat();
-
-    jpeg_decompress_struct decoder{};
-    JpegErrorManager error{};
-    decoder.err = jpeg_std_error(&error.public_error);
-    error.public_error.error_exit = jpeg_error_exit;
-    if (setjmp(error.jump_buffer) != 0) {
-        jpeg_destroy_decompress(&decoder);
-        std::fclose(file);
+// On failure returns an empty Mat and stores the libjpeg diagnosis in `error_message`.
+ncnn::Mat load_jpeg(const std::string& image_path, std::string& error_message) {
+    std::unique_ptr<FILE, int (*)(FILE*)> file(std::fopen(image_path.c_str(), "rb"), &std::fclose);
+    if (!file) {
+        error_message = "cannot open file";
         return ncnn::Mat();
     }
-
-    jpeg_create_decompress(&decoder);
-    jpeg_stdio_src(&decoder, file);
-    if (jpeg_read_header(&decoder, TRUE) != JPEG_HEADER_OK) {
-        jpeg_destroy_decompress(&decoder);
-        std::fclose(file);
+    JpegPixels pixels;
+    char message[JMSG_LENGTH_MAX] = {};
+    if (!decode_jpeg(file.get(), &pixels, message, sizeof(message))) {
+        error_message = message;
         return ncnn::Mat();
     }
-    decoder.out_color_space = JCS_RGB;
-    jpeg_start_decompress(&decoder);
-
-    ncnn::Mat bgr(static_cast<int>(decoder.output_width), static_cast<int>(decoder.output_height),
-                  3, static_cast<size_t>(1u));
-    std::vector<unsigned char> row(static_cast<size_t>(decoder.output_width) * 3);
-    while (decoder.output_scanline < decoder.output_height) {
-        unsigned char* row_ptr = row.data();
-        if (jpeg_read_scanlines(&decoder, &row_ptr, 1) != 1) {
-            jpeg_destroy_decompress(&decoder);
-            std::fclose(file);
-            return ncnn::Mat();
-        }
-        const int y = static_cast<int>(decoder.output_scanline - 1);
-        unsigned char* destination =
-            static_cast<unsigned char*>(bgr.data) + static_cast<size_t>(y) * bgr.w * 3;
-        for (int x = 0; x < bgr.w; ++x) {
-            destination[x * 3 + 0] = row[x * 3 + 2];
-            destination[x * 3 + 1] = row[x * 3 + 1];
-            destination[x * 3 + 2] = row[x * 3 + 0];
-        }
+    ncnn::Mat bgr(pixels.width, pixels.height, 3, static_cast<size_t>(1u));
+    if (!bgr.empty()) {
+        std::memcpy(bgr.data, pixels.bgr, static_cast<size_t>(pixels.width) * pixels.height * 3);
+    } else {
+        error_message = "out of memory";
     }
-    jpeg_finish_decompress(&decoder);
-    jpeg_destroy_decompress(&decoder);
-    std::fclose(file);
+    std::free(pixels.bgr);
     return bgr;
 }
 
@@ -163,17 +225,30 @@ ncnn::Mat load_jpeg(const std::string& image_path) {
 ncnn::Mat load_image(const std::string& image_path) {
 #if HUNYUAN_OCR_HAS_JPEG
     if (is_jpeg_file(image_path)) {
-        ncnn::Mat jpeg = load_jpeg(image_path);
-        if (!jpeg.empty()) return jpeg;
+        // libjpeg is the Pillow-compatible decoder.  Do not fall back to the more lenient
+        // stb_image on failure: it would silently accept truncated or corrupt JPEG data.
+        std::string jpeg_error;
+        ncnn::Mat jpeg = load_jpeg(image_path, jpeg_error);
+        if (jpeg.empty()) {
+            throw std::runtime_error("failed to load JPEG image '" + image_path +
+                                     "': " + jpeg_error);
+        }
+        return jpeg;
     }
 #endif
     int w, h, c;
     unsigned char* data = stbi_load(image_path.c_str(), &w, &h, &c, 3);
     if (!data) {
-        return ncnn::Mat();
+        const char* reason = stbi_failure_reason();
+        throw std::runtime_error("failed to load image '" + image_path +
+                                 "': " + (reason ? reason : "unknown error"));
     }
 
     ncnn::Mat bgr(w, h, 3, (size_t)1u);
+    if (bgr.empty()) {
+        stbi_image_free(data);
+        throw std::runtime_error("out of memory while loading image '" + image_path + "'");
+    }
     unsigned char* dst = (unsigned char*)bgr.data;
 
     for (int i = 0; i < w * h; i++) {

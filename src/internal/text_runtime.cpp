@@ -163,6 +163,10 @@ ncnn::Mat llm_run_decoder_with_kv(ncnn::Net& decoder_net, const ncnn::Mat& embed
         }
     }
 
+    // Collect the new caches locally and commit them only after every output has been
+    // extracted, so a failure never leaves the caller with a partially updated cache.
+    KvCache next_cache;
+    next_cache.reserve(attn_cnt);
     for (int i = 0; i < attn_cnt; i++) {
         char name_k_out[32], name_v_out[32];
         std::snprintf(name_k_out, sizeof(name_k_out), "out_cache_k%d", i);
@@ -178,11 +182,7 @@ ncnn::Mat llm_run_decoder_with_kv(ncnn::Net& decoder_net, const ncnn::Mat& embed
             throw std::runtime_error(std::string("decoder failed to extract ") + name_v_out +
                                      " ret=" + std::to_string(v_ret) + " " + mat_shape(v_cache));
         }
-        if (is_prefill) {
-            kv_cache.emplace_back(std::move(k_cache), std::move(v_cache));
-        } else {
-            kv_cache[i] = std::make_pair(std::move(k_cache), std::move(v_cache));
-        }
+        next_cache.emplace_back(std::move(k_cache), std::move(v_cache));
     }
 
     if (ex.extract("out0", decode_out) != 0 || decode_out.empty()) {
@@ -192,6 +192,7 @@ ncnn::Mat llm_run_decoder_with_kv(ncnn::Net& decoder_net, const ncnn::Mat& embed
         (ex.extract("out1", *target_features) != 0 || target_features->empty())) {
         throw std::runtime_error("decoder failed to extract DFlash target features");
     }
+    kv_cache = std::move(next_cache);
     return decode_out;
 }
 
@@ -363,6 +364,11 @@ ncnn::Mat llm_run_decoder_lm_head_with_kv_vulkan(ncnn::Net& decoder_net, ncnn::N
 int select_next_token(const ncnn::Mat& logits, const std::unordered_set<int>& history,
                       const TokenSampleConfig& cfg) {
     const int vocab_size = cfg.vocabulary_size > 0 ? cfg.vocabulary_size : logits.w;
+    if (logits.data == nullptr || logits.w < vocab_size) {
+        throw std::runtime_error("lm_head returned " + std::to_string(logits.w) +
+                                 " logits but the model vocabulary size is " +
+                                 std::to_string(vocab_size) + "; check vocab_size in model.json");
+    }
     std::vector<float> scores(vocab_size);
     std::memcpy(scores.data(), logits.data, sizeof(float) * vocab_size);
 
@@ -380,6 +386,7 @@ int select_next_token(const ncnn::Mat& logits, const std::unordered_set<int>& hi
     }
 
     softmax_vec(scores, cfg.temperature);
+    // Same order as Hugging Face: top_k first, then top_p on the renormalized survivors.
     if (cfg.top_k > 0) apply_top_k(scores, cfg.top_k);
     if (cfg.top_p < 1.0f) apply_top_p(scores, cfg.top_p);
 
@@ -388,7 +395,9 @@ int select_next_token(const ncnn::Mat& logits, const std::unordered_set<int>& hi
         return (int)(std::max_element(scores.begin(), scores.end()) - scores.begin());
     }
 
-    return sample_from_probs(scores);
+    if (cfg.rng) return sample_from_probs(scores, *cfg.rng);
+    std::mt19937 fallback_rng = make_sampling_rng(std::nullopt);
+    return sample_from_probs(scores, fallback_rng);
 }
 
 }  // namespace hunyuan_ocr::internal

@@ -43,6 +43,7 @@ add_library(hunyuan_ocr_ncnn_runtime
     src/internal/runtime_impl.cpp
     src/internal/text_runtime.cpp
     src/internal/sampling.cpp
+    src/internal/text_utils.cpp
     src/internal/image_preprocessor.cpp
     src/internal/image.cpp
     src/internal/xdrope.cpp

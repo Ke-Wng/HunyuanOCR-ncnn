@@ -15,7 +15,9 @@
 #include "internal/dflash_commit.h"
 #include "internal/engine.h"
 #include "internal/image.h"
+#include "internal/sampling.h"
 #include "internal/text_runtime.h"
+#include "internal/text_utils.h"
 #include "internal/xdrope.h"
 
 namespace hunyuan_ocr::internal {
@@ -286,9 +288,13 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
                 "one or more requested Vulkan networks fell back to CPU during load");
         }
 #endif
-        std::string type = "bpe";
-        if (config["tokenizer"].contains("type")) {
-            type = config["tokenizer"]["type"].get<std::string>();
+        if (!config["tokenizer"].contains("type")) {
+            throw std::runtime_error("model.json is missing tokenizer.type");
+        }
+        const std::string type = config["tokenizer"]["type"].get<std::string>();
+        if (type != "bbpe") {
+            throw std::runtime_error("HunyuanOCR v1.5 requires tokenizer.type == bbpe, got \"" +
+                                     type + "\"");
         }
         std::string vocab_file =
             model_path + "/" + config["tokenizer"]["vocab_file"].get<std::string>();
@@ -296,7 +302,7 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
             model_path + "/" + config["tokenizer"]["merges_file"].get<std::string>();
 
         tokenizer_ = std::make_shared<BpeTokenizer>(BpeTokenizer::LoadFromFiles(
-            vocab_file, merges_file, SpecialTokensConfig{}, false, true, type == "bbpe"));
+            vocab_file, merges_file, SpecialTokensConfig{}, false, true, true));
 
         std::vector<std::string> additional_special_tokens =
             config["tokenizer"]["additional_special_tokens"].get<std::vector<std::string>>();
@@ -351,6 +357,13 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
             for (auto& v : rope_cfg["xdrope_section"]) {
                 xdrope_sections_.push_back(v.get<int>());
             }
+            // One section per position axis (linear, w, h, t).
+            if (xdrope_sections_.size() > 4 ||
+                std::any_of(xdrope_sections_.begin(), xdrope_sections_.end(),
+                            [](int section) { return section < 0; })) {
+                throw std::runtime_error(
+                    "setting.rope.xdrope_section must have at most 4 non-negative entries");
+            }
             const int section_sum =
                 std::accumulate(xdrope_sections_.begin(), xdrope_sections_.end(), 0);
             if (xdrope_sections_.empty() || section_sum != head_dimension_ / 2) {
@@ -388,6 +401,14 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
             preprocessor_.set_config(preprocess_config);
 
             vocabulary_size_ = config["setting"].value("vocab_size", (int)tokenizer_->vocab_size());
+            if (vocabulary_size_ <= 0) {
+                throw std::runtime_error("setting.vocab_size must be positive");
+            }
+            if (static_cast<size_t>(vocabulary_size_) < tokenizer_->vocab_size()) {
+                throw std::runtime_error("setting.vocab_size (" + std::to_string(vocabulary_size_) +
+                                         ") is smaller than the tokenizer vocabulary (" +
+                                         std::to_string(tokenizer_->vocab_size()) + ")");
+            }
         }
     } catch (const std::exception& error) {
 #if NCNN_VULKAN
@@ -607,7 +628,7 @@ std::shared_ptr<Context> Engine::generate(const std::shared_ptr<Context>& input_
     ctx->stop_reason = StopReason::None;
     std::unordered_set<int> history = ctx->token_history;
     if (history.empty()) history.insert(ctx->current_token);
-    std::string streamed_text;
+    Utf8StreamEmitter emitter(on_text);
 
     TokenSampleConfig sample_config;
     sample_config.vocabulary_size = vocabulary_size_;
@@ -616,6 +637,11 @@ std::shared_ptr<Context> Engine::generate(const std::shared_ptr<Context>& input_
     sample_config.top_k = options.top_k;
     sample_config.repetition_penalty = options.repetition_penalty;
     sample_config.do_sample = options.do_sample;
+    std::mt19937 rng;
+    if (options.do_sample) {
+        rng = make_sampling_rng(options.seed);
+        sample_config.rng = &rng;
+    }
 
     // Prefill already computed the logits for the first generated token.  Apply
     // the same history-dependent sampling contract here as on later steps;
@@ -626,15 +652,11 @@ std::shared_ptr<Context> Engine::generate(const std::shared_ptr<Context>& input_
     }
     history.insert(ctx->current_token);
 
-    auto emit_decoded_prefix = [&]() {
+    // Streams the decoded text, holding back an incomplete trailing UTF-8 sequence until
+    // it completes (or `finish`, which flushes it as U+FFFD).
+    auto emit_decoded_prefix = [&](bool finish) {
         if (!on_text) return;
-        const std::string decoded = tokenizer_->decode(ctx->generated_tokens, true);
-        if (decoded.size() >= streamed_text.size() &&
-            decoded.compare(0, streamed_text.size(), streamed_text) == 0) {
-            const std::string fragment = decoded.substr(streamed_text.size());
-            streamed_text = decoded;
-            if (!fragment.empty()) on_text(fragment);
-        }
+        emitter.update(tokenizer_->decode(ctx->generated_tokens, true), finish);
     };
 
     for (int step = 0; step < options.max_new_tokens; ++step) {
@@ -646,7 +668,7 @@ std::shared_ptr<Context> Engine::generate(const std::shared_ptr<Context>& input_
             break;
         }
 
-        emit_decoded_prefix();
+        emit_decoded_prefix(false);
 
         ncnn::Mat cur_embed = llm_run_text_embed(*text_embed_net_, token);
 
@@ -657,8 +679,8 @@ std::shared_ptr<Context> Engine::generate(const std::shared_ptr<Context>& input_
                                        rope_alpha_, cos_cache, sin_cache);
         ++ctx->position;
 
-        // Mask [1, kv_len+1] all zeros: the new token attends to all cached positions + itself.
-        ncnn::Mat mask(1, ctx->kv_length() + 1);
+        // Mask [w=kv_len+1, h=1] all zeros: the new token attends to all cached positions + itself.
+        ncnn::Mat mask(ctx->kv_length() + 1, 1);
         mask.fill(0.0f);
 
         ncnn::Mat logits;
@@ -687,7 +709,7 @@ std::shared_ptr<Context> Engine::generate(const std::shared_ptr<Context>& input_
         static_cast<int>(ctx->generated_tokens.size()) >= options.max_new_tokens) {
         ctx->stop_reason = StopReason::MaxNewTokens;
     }
-    emit_decoded_prefix();
+    emit_decoded_prefix(true);
 
     profile_.total_seconds += elapsed_seconds(generation_begin, std::chrono::steady_clock::now());
     return ctx;
@@ -711,7 +733,7 @@ std::shared_ptr<Context> Engine::generate_dflash(
     std::unordered_set<int> history = ctx->token_history;
     if (history.empty()) history.insert(ctx->current_token);
     Profile profile = profile_;
-    std::string streamed_text;
+    Utf8StreamEmitter emitter(on_text);
 
     TokenSampleConfig sample_config;
     sample_config.vocabulary_size = vocabulary_size_;
@@ -735,15 +757,7 @@ std::shared_ptr<Context> Engine::generate_dflash(
     auto emit_token = [&](int token) {
         ctx->generated_tokens.push_back(token);
         history.insert(token);
-        if (on_text) {
-            const std::string decoded = tokenizer_->decode(ctx->generated_tokens, true);
-            if (decoded.size() >= streamed_text.size() &&
-                decoded.compare(0, streamed_text.size(), streamed_text) == 0) {
-                const std::string fragment = decoded.substr(streamed_text.size());
-                streamed_text = decoded;
-                if (!fragment.empty()) on_text(fragment);
-            }
-        }
+        if (on_text) emitter.update(tokenizer_->decode(ctx->generated_tokens, true));
     };
     auto commit_final_token = [&](int token) {
         ncnn::Mat token_embedding = llm_run_text_embed(*text_embed_net_, token);
@@ -933,6 +947,7 @@ std::shared_ptr<Context> Engine::generate_dflash(
         static_cast<int>(ctx->generated_tokens.size()) >= options.max_new_tokens) {
         ctx->stop_reason = StopReason::MaxNewTokens;
     }
+    if (on_text) emitter.update(tokenizer_->decode(ctx->generated_tokens, true), true);
     profile.total_seconds += elapsed_seconds(generation_begin, std::chrono::steady_clock::now());
     profile_ = profile;
     return ctx;

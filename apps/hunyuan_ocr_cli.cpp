@@ -1,4 +1,6 @@
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -42,6 +44,37 @@ std::string require_value(int argc, char** argv, int& index) {
     return argv[++index];
 }
 
+// Strict numeric parsing: the whole token must be consumed and fit the type.  Every failure is
+// reported as std::invalid_argument so that main() prints the usage text.
+int parse_int(const std::string& option, const std::string& value) {
+    size_t consumed = 0;
+    int parsed = 0;
+    try {
+        parsed = std::stoi(value, &consumed);
+    } catch (const std::exception&) {
+        consumed = 0;
+    }
+    if (consumed == 0 || consumed != value.size()) {
+        throw std::invalid_argument(option + " expects an integer within int range, got '" + value +
+                                    "'");
+    }
+    return parsed;
+}
+
+float parse_float(const std::string& option, const std::string& value) {
+    size_t consumed = 0;
+    float parsed = 0.0F;
+    try {
+        parsed = std::stof(value, &consumed);
+    } catch (const std::exception&) {
+        consumed = 0;
+    }
+    if (consumed == 0 || consumed != value.size() || !std::isfinite(parsed)) {
+        throw std::invalid_argument(option + " expects a finite number, got '" + value + "'");
+    }
+    return parsed;
+}
+
 Arguments parse_arguments(int argc, char** argv) {
     Arguments arguments;
     for (int index = 1; index < argc; ++index) {
@@ -53,13 +86,13 @@ Arguments parse_arguments(int argc, char** argv) {
         } else if (option == "--prompt") {
             arguments.prompt = require_value(argc, argv, index);
         } else if (option == "--threads") {
-            arguments.threads = std::stoi(require_value(argc, argv, index));
+            arguments.threads = parse_int(option, require_value(argc, argv, index));
         } else if (option == "--max-new-tokens") {
-            arguments.max_new_tokens = std::stoi(require_value(argc, argv, index));
+            arguments.max_new_tokens = parse_int(option, require_value(argc, argv, index));
         } else if (option == "--repetition-penalty") {
-            arguments.repetition_penalty = std::stof(require_value(argc, argv, index));
+            arguments.repetition_penalty = parse_float(option, require_value(argc, argv, index));
         } else if (option == "--vulkan-device") {
-            arguments.vulkan_device = std::stoi(require_value(argc, argv, index));
+            arguments.vulkan_device = parse_int(option, require_value(argc, argv, index));
         } else if (option == "--vulkan-precision") {
             const std::string precision = require_value(argc, argv, index);
             if (precision == "fp32") {
@@ -167,6 +200,7 @@ void print_profile(const hunyuan_ocr::Profile& profile) {
 }
 
 void write_json(const std::string& path, const Arguments& arguments,
+                const hunyuan_ocr::GenerationOptions& generation,
                 const hunyuan_ocr::Result& result) {
     json report = {
         {"model", arguments.model_directory},
@@ -179,11 +213,11 @@ void write_json(const std::string& path, const Arguments& arguments,
         {"vulkan_precision",
          arguments.vulkan_precision == hunyuan_ocr::VulkanPrecision::Mixed ? "mixed" : "fp32"},
         {"max_new_tokens", arguments.max_new_tokens},
-        {"repetition_penalty", arguments.repetition_penalty},
-        {"temperature", 0.0F},
-        {"top_p", 1.0F},
-        {"top_k", -1},
-        {"do_sample", false},
+        {"repetition_penalty", generation.repetition_penalty},
+        {"temperature", generation.temperature},
+        {"top_p", generation.top_p},
+        {"top_k", generation.top_k},
+        {"do_sample", generation.do_sample},
         {"prefill_only", arguments.prefill_only},
         {"dflash", arguments.dflash},
         {"profile", profile_json(result.profile)},
@@ -196,9 +230,14 @@ void write_json(const std::string& path, const Arguments& arguments,
         {"stop_reason", stop_reason_name(result.stop_reason)},
         {"position_id", result.position},
     };
-    std::ofstream output(path);
+    // Serialize first (replacing any invalid UTF-8 so dump cannot throw) and only then open the
+    // file, so a failure never leaves an empty or truncated report behind.
+    const std::string serialized = report.dump(2, ' ', false, json::error_handler_t::replace);
+    std::ofstream output(path, std::ios::binary);
     if (!output) throw std::runtime_error("failed to open JSON output: " + path);
-    output << report.dump(2) << '\n';
+    output << serialized << '\n';
+    output.flush();
+    if (!output) throw std::runtime_error("failed to write JSON output: " + path);
 }
 
 }  // namespace
@@ -213,13 +252,14 @@ int main(int argc, char** argv) {
         runtime_options.enable_dflash = arguments.dflash;
         hunyuan_ocr::Runtime runtime(arguments.model_directory, runtime_options);
 
+        hunyuan_ocr::GenerationOptions generation;
+        generation.max_new_tokens = arguments.max_new_tokens;
+        generation.repetition_penalty = arguments.repetition_penalty;
+
         hunyuan_ocr::Result result;
         if (arguments.prefill_only) {
             result = runtime.prefill(arguments.image_path, arguments.prompt);
         } else {
-            hunyuan_ocr::GenerationOptions generation;
-            generation.max_new_tokens = arguments.max_new_tokens;
-            generation.repetition_penalty = arguments.repetition_penalty;
             result = runtime.recognize(arguments.image_path, arguments.prompt, generation,
                                        [](const std::string& fragment) {
                                            std::fwrite(fragment.data(), 1, fragment.size(), stdout);
@@ -229,7 +269,8 @@ int main(int argc, char** argv) {
         }
 
         if (arguments.profile) print_profile(result.profile);
-        if (!arguments.json_output.empty()) write_json(arguments.json_output, arguments, result);
+        if (!arguments.json_output.empty())
+            write_json(arguments.json_output, arguments, generation, result);
         return 0;
     } catch (const std::invalid_argument& error) {
         std::fprintf(stderr, "error: %s\n", error.what());
