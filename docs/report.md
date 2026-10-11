@@ -168,7 +168,7 @@ Prefill（处理图片和提示词、建立 KV Cache）
 
 逐 token 阶段跨越 CPU/GPU 边界的只有单 token embedding、Mask、xdRoPE 等小尺寸输入，以及最终 logits。48 份 K/V Cache 和 Decoder hidden state 都不离开显存。Decoder、Cache 更新、Mixed 精度转换和 LM Head 被记录到同一个 Vulkan command 中，成功执行后才用新 Cache 替换旧 Cache。
 
-FP32 是 Vulkan 默认精度，并显式关闭 ncnn 默认的 FP16/BF16 storage 与 arithmetic。 Mixed 必须由调用者显式选择：Vision 使用 FP16 storage 和 FP32 accumulation； Decoder/KV Cache 优先使用 BF16 storage，不支持时使用 FP16 storage 和 FP32 accumulation；对数值敏感的 DFlash Draft 与 LM Head 保持 FP32。该选择性策略避免 Draft 低精度导致接受率归零，同时仍显著降低 Vision 与 Target Decoder 的显存占用。
+FP32 是 Vulkan 默认精度，并显式关闭 ncnn 默认的 FP16/BF16 storage 与 arithmetic。 Mixed 必须由调用者显式选择：Vision 保持 FP32，以避免 LayerNorm 平方中间量在 FP16 storage 中溢出； Decoder/KV Cache 优先使用 BF16 storage，不支持时使用 FP16 storage 和 FP32 accumulation；对数值敏感的 DFlash Draft 与 LM Head 保持 FP32。该选择性策略降低 Target Decoder 权重与 KV Cache 的显存占用；FP16 arithmetic 显式关闭，Vision 不计入低精度节省。
 
 ### 3.8 DFlash 投机解码
 

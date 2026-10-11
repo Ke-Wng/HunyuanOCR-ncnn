@@ -218,20 +218,17 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
             }
 
             if (vulkan_precision_ == VulkanPrecision::Mixed) {
-                if (!vkdev_->info.support_fp16_storage()) {
-                    throw std::runtime_error(
-                        "mixed Vulkan precision requires FP16 storage support");
-                }
-
-                vision_net_->opt.use_fp16_packed = true;
-                vision_net_->opt.use_fp16_storage = true;
-                vision_net_->opt.use_fp16_arithmetic = false;
-                vision_storage_ = "fp16";
-
+                // Vision LayerNorm squares can overflow FP16 storage, so keep the
+                // vision tower in FP32 and reduce storage only for Decoder/KV.
+                vision_storage_ = "fp32";
                 if (vkdev_->info.support_bf16_storage()) {
                     text_decoder_net_->opt.use_bf16_storage = true;
                     decoder_storage_ = "bf16";
                 } else {
+                    if (!vkdev_->info.support_fp16_storage()) {
+                        throw std::runtime_error(
+                            "mixed Vulkan precision requires BF16 or FP16 storage support");
+                    }
                     text_decoder_net_->opt.use_fp16_storage = true;
                     text_decoder_net_->opt.use_fp16_arithmetic = false;
                     decoder_storage_ = "fp16";

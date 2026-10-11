@@ -101,7 +101,7 @@ python -m venv .venv
 
 DFlash 当前只接受贪心配置，支持 CPU FP32、Vulkan FP32 和 Vulkan Mixed。
 
-`--vulkan-precision mixed` 会让 Vision 使用 FP16 storage、Decoder/KV Cache 优先使用 BF16 storage（不支持时使用 FP16），而对低精度敏感的 DFlash Draft 和 LM Head 保持 FP32。
+`--vulkan-precision mixed` 会让 Vision 保持 FP32、Decoder/KV Cache 优先使用 BF16 storage（不支持时使用 FP16），关闭 FP16 arithmetic，而对低精度敏感的 DFlash Draft 和 LM Head 保持 FP32。
 
 只测试 prefill 并输出结构化结果：
 
