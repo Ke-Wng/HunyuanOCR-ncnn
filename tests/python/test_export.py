@@ -324,6 +324,36 @@ def test_dflash_metadata_uses_v3_contract(tmp_path):
     }
 
 
+def test_eos_ids_include_tokenizer_turn_end(tmp_path):
+    snapshot = make_snapshot(tmp_path / "snapshot")
+    tokenizer_config = {
+        "added_tokens_decoder": {"4": {"content": "<image>"}, "5": {"content": "<turn_end>"}},
+        "eos_token": "<turn_end>",
+    }
+    (snapshot / "tokenizer_config.json").write_text(json.dumps(tokenizer_config))
+    output = tmp_path / "output"
+    output.mkdir()
+
+    write_model_json(snapshot, output)
+
+    model_json = json.loads((output / "model.json").read_text(encoding="utf-8"))
+    assert model_json["tokenizer"]["eos_ids"] == [2, 3, 5]
+
+
+def test_unknown_tokenizer_eos_token_is_rejected(tmp_path):
+    snapshot = make_snapshot(tmp_path / "snapshot")
+    tokenizer_config = {
+        "added_tokens_decoder": {"4": {"content": "<image>"}},
+        "eos_token": "<missing>",
+    }
+    (snapshot / "tokenizer_config.json").write_text(json.dumps(tokenizer_config))
+    output = tmp_path / "output"
+    output.mkdir()
+
+    with pytest.raises(SystemExit, match="not an added token"):
+        write_model_json(snapshot, output)
+
+
 def test_v15_ar_model_does_not_require_dflash_export(tmp_path):
     snapshot = make_snapshot(tmp_path / "snapshot")
     output = tmp_path / "output"

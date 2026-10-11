@@ -308,6 +308,9 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
                 eos_ids_.insert(v.get<int>());
             }
         }
+        if (eos_ids_.empty()) {
+            throw std::runtime_error("model.json tokenizer.eos_ids must list at least one token");
+        }
 
         if (config["setting"].contains("attn_cnt")) {
             attention_layers_ = config["setting"]["attn_cnt"].get<int>();

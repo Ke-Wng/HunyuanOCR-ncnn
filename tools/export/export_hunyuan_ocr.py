@@ -584,6 +584,36 @@ def intermediate_workspace(out_dir: Path, keep_intermediates: bool):
     return tempfile.TemporaryDirectory(prefix="hunyuan_ocr_export_")
 
 
+def resolve_eos_ids(model_path: Path, tokenizer_cfg: dict[str, Any]) -> list[int]:
+    """Collect every token id that ends generation.
+
+    ``generation_config.json`` only names ``<｜hy_end▁of▁sentence｜>``, but a chat
+    turn ends with the tokenizer's ``eos_token`` (``<｜hy_Assistant｜>``).  Both are
+    needed; without the latter greedy decoding never stops before the budget.
+    """
+    eos_ids: set[int] = set()
+    gen_cfg_path = model_path / "generation_config.json"
+    if gen_cfg_path.exists():
+        eos = json.loads(gen_cfg_path.read_text(encoding="utf-8")).get("eos_token_id")
+        if eos is not None:
+            eos_ids.update(eos if isinstance(eos, list) else [eos])
+    eos_token = tokenizer_cfg.get("eos_token")
+    if isinstance(eos_token, dict):
+        eos_token = eos_token.get("content")
+    if eos_token:
+        matches = [
+            int(token_id)
+            for token_id, entry in tokenizer_cfg["added_tokens_decoder"].items()
+            if entry["content"] == eos_token
+        ]
+        if not matches:
+            raise SystemExit(f"tokenizer eos_token {eos_token!r} is not an added token")
+        eos_ids.update(matches)
+    if not eos_ids:
+        raise SystemExit("model defines no EOS token in generation or tokenizer config")
+    return sorted(eos_ids)
+
+
 def write_model_json(
     model_path: Path,
     out_dir: Path,
@@ -599,11 +629,7 @@ def write_model_json(
         v["content"]
         for _, v in sorted(tokenizer_cfg["added_tokens_decoder"].items(), key=lambda kv: int(kv[0]))
     ]
-    gen_cfg_path = model_path / "generation_config.json"
-    eos_ids = [120007, 120020]
-    if gen_cfg_path.exists():
-        eos = json.loads(gen_cfg_path.read_text(encoding="utf-8")).get("eos_token_id", eos_ids)
-        eos_ids = eos if isinstance(eos, list) else [eos]
+    eos_ids = resolve_eos_ids(model_path, tokenizer_cfg)
 
     params = {
         "vision_backend": "full_dynamic_ncnn",
