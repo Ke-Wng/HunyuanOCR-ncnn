@@ -230,6 +230,27 @@ void test_bbpe_decodes_split_utf8_sequence() {
     std::remove(merges_path.c_str());
 }
 
+void test_bbpe_keeps_literal_escapes_and_hash_merges() {
+    const std::string vocab_path = "/tmp/hunyuan_ocr_runtime_core_vocab2.txt";
+    const std::string merges_path = "/tmp/hunyuan_ocr_runtime_core_merges2.txt";
+    {
+        std::ofstream vocab(vocab_path, std::ios::binary);
+        vocab << "#\n##\n\\n\n\\t\nb\n";  // '#', '##', literal backslash-n/-t, 'b'
+        std::ofstream merges(merges_path, std::ios::binary);
+        merges << "#version: 0.2\n# #\n";
+    }
+
+    const SpecialTokensConfig spec;
+    const BpeTokenizer tokenizer =
+        BpeTokenizer::LoadFromFiles(vocab_path, merges_path, spec, false, false, true);
+    require_true(tokenizer.encode("##") == std::vector<int>{1},
+                 "a merge whose first token is '#' must be loaded");
+    require_true(tokenizer.decode({3, 2, 4}) == "\\t\\nb",
+                 "BBPE must not turn literal backslash-n/-t vocab entries into control bytes");
+    std::remove(vocab_path.c_str());
+    std::remove(merges_path.c_str());
+}
+
 }  // namespace
 
 int main() {
@@ -243,6 +264,7 @@ int main() {
     test_runtime_option_defaults();
     test_standard_rope();
     test_bbpe_decodes_split_utf8_sequence();
+    test_bbpe_keeps_literal_escapes_and_hash_merges();
     std::printf("runtime core tests passed\n");
     return 0;
 }

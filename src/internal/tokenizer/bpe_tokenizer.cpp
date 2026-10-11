@@ -3,8 +3,12 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
+
+#include "internal/tokenizer/unicode_tables.h"
 
 namespace hunyuan_ocr::internal {
 
@@ -48,7 +52,10 @@ std::unordered_map<std::string, int> BpeTokenizer::LoadMergesRank(const std::str
     std::string line;
     int rank = 0;
     while (std::getline(ifs, line)) {
-        if (line.empty() || line[0] == '#') continue;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        // Only the optional "#version: x.y" header is a comment; "# #", "## ##", ... are real
+        // merges.
+        if (line.empty() || line.compare(0, 8, "#version") == 0) continue;
         std::istringstream iss(line);
         std::string a, b;
         if (!(iss >> a >> b)) continue;
@@ -243,6 +250,160 @@ std::vector<std::string> BpeTokenizer::PretokenizeSentencePiece(const std::strin
     return out;
 }
 
+// ---------------- Byte-level pretokenizer ----------------
+namespace {
+
+struct PreChar {
+    uint32_t cp;
+    UnicodeClass cls;
+};
+
+UnicodeClass ClassifyCodePoint(uint32_t cp) {
+    const auto* begin = std::begin(kUnicodeRanges);
+    const auto* end = std::end(kUnicodeRanges);
+    const auto* it = std::upper_bound(
+        begin, end, cp, [](uint32_t value, const UnicodeRange& r) { return value < r.first; });
+    if (it == begin) return UnicodeClass::kOther;
+    --it;
+    return cp <= it->last ? it->cls : UnicodeClass::kOther;
+}
+
+bool IsLetterOrMark(UnicodeClass c) { return c == UnicodeClass::kL || c == UnicodeClass::kM; }
+bool IsPunctOrSymbol(UnicodeClass c) { return c == UnicodeClass::kP || c == UnicodeClass::kS; }
+bool IsAsciiPunct(uint32_t cp) {
+    return (cp >= '!' && cp <= '/') || (cp >= ':' && cp <= '@') || (cp >= '[' && cp <= '`') ||
+           (cp >= '{' && cp <= '~');
+}
+bool IsAsciiLetter(uint32_t cp) { return (cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z'); }
+bool IsLineBreak(uint32_t cp) { return cp == '\r' || cp == '\n'; }
+
+using Span = std::pair<size_t, size_t>;  // [begin, end) in PreChar indices
+
+// Length of the match of the third (word/punctuation/whitespace) Split regex of
+// tokenizer.json at `p`, or 0. The alternatives are tried in order, as in the regex:
+//   [ASCII punct][A-Za-z]+ | [^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+ | ?[\p{P}\p{S}]+[\r\n]*
+//   | \s*[\r\n]+ | \s+(?!\S) | \s+
+size_t MatchWordRegex(const std::vector<PreChar>& ch, size_t p, size_t e) {
+    const PreChar& c = ch[p];
+
+    if (IsAsciiPunct(c.cp) && p + 1 < e && IsAsciiLetter(ch[p + 1].cp)) {
+        size_t q = p + 1;
+        while (q < e && IsAsciiLetter(ch[q].cp)) ++q;
+        return q - p;
+    }
+
+    const bool prefix_ok = !IsLineBreak(c.cp) && c.cls != UnicodeClass::kL &&
+                           c.cls != UnicodeClass::kP && c.cls != UnicodeClass::kS;
+    if ((prefix_ok && p + 1 < e && IsLetterOrMark(ch[p + 1].cls)) || IsLetterOrMark(c.cls)) {
+        size_t q = p + 1;
+        while (q < e && IsLetterOrMark(ch[q].cls)) ++q;
+        return q - p;
+    }
+
+    {
+        size_t q = p;
+        if (c.cp == ' ' && p + 1 < e && IsPunctOrSymbol(ch[p + 1].cls)) ++q;
+        if (q < e && IsPunctOrSymbol(ch[q].cls)) {
+            while (q < e && IsPunctOrSymbol(ch[q].cls)) ++q;
+            while (q < e && IsLineBreak(ch[q].cp)) ++q;
+            return q - p;
+        }
+    }
+
+    if (c.cls == UnicodeClass::kSpace) {
+        size_t run_end = p;
+        while (run_end < e && ch[run_end].cls == UnicodeClass::kSpace) ++run_end;
+        // \s*[\r\n]+ backtracks to the last line break inside the whitespace run.
+        for (size_t q = run_end; q > p; --q) {
+            if (IsLineBreak(ch[q - 1].cp)) return q - p;
+        }
+        // \s+(?!\S): the whole run at the end of the piece, otherwise all but the last one.
+        if (run_end == e) return run_end - p;
+        if (run_end - p >= 2) return run_end - p - 1;
+        return run_end - p;
+    }
+    return 0;
+}
+
+// Split(..., Isolated): every match becomes its own piece and so does the text between matches.
+void SplitIsolated(const std::vector<Span>& in, std::vector<Span>& out,
+                   const std::function<size_t(size_t, size_t)>& match) {
+    for (const Span& sp : in) {
+        size_t gap = sp.first;
+        size_t p = sp.first;
+        while (p < sp.second) {
+            const size_t len = match(p, sp.second);
+            if (len == 0) {
+                ++p;
+                continue;
+            }
+            if (gap < p) out.emplace_back(gap, p);
+            out.emplace_back(p, p + len);
+            p += len;
+            gap = p;
+        }
+        if (gap < sp.second) out.emplace_back(gap, sp.second);
+    }
+}
+
+}  // namespace
+
+// Mirrors the pre_tokenizer of the official tokenizer.json: Split(\p{N}{1,3}), Split(CJK/kana
+// runs), Split(word/punctuation/whitespace regex), each Isolated and applied to the pieces of the
+// previous step; ByteLevel (use_regex=false) is applied by the caller.
+std::vector<std::string> BpeTokenizer::PretokenizeHunyuan(const std::string& text) {
+    std::vector<PreChar> ch;
+    std::vector<size_t> offset;
+    ch.reserve(text.size());
+    offset.reserve(text.size() + 1);
+    size_t i = 0;
+    while (i < text.size()) {
+        offset.push_back(i);
+        uint32_t cp = 0;
+        size_t len = 0;
+        size_t j = i;
+        if (NextUtf8(text, j, cp, len)) {
+            i = j;
+            ch.push_back({cp, ClassifyCodePoint(cp)});
+        } else {
+            // Invalid UTF-8 never reaches the official tokenizer; keep the byte as its own
+            // "other" character so that it still encodes byte-wise.
+            ++i;
+            ch.push_back({0xFFFD, UnicodeClass::kOther});
+        }
+    }
+    offset.push_back(text.size());
+
+    const std::vector<Span> whole{{0, ch.size()}};
+    std::vector<Span> digits;
+    SplitIsolated(whole, digits, [&](size_t p, size_t e) -> size_t {
+        size_t q = p;
+        while (q < e && q - p < 3 && ch[q].cls == UnicodeClass::kN) ++q;
+        return q - p;
+    });
+
+    auto is_cjk = [](uint32_t cp) {
+        return (cp >= 0x4E00 && cp <= 0x9FA5) || (cp >= 0x3040 && cp <= 0x309F) ||
+               (cp >= 0x30A0 && cp <= 0x30FF);
+    };
+    std::vector<Span> cjk;
+    SplitIsolated(digits, cjk, [&](size_t p, size_t e) -> size_t {
+        size_t q = p;
+        while (q < e && is_cjk(ch[q].cp)) ++q;
+        return q - p;
+    });
+
+    std::vector<Span> words;
+    SplitIsolated(cjk, words, [&](size_t p, size_t e) { return MatchWordRegex(ch, p, e); });
+
+    std::vector<std::string> pieces;
+    pieces.reserve(words.size());
+    for (const Span& sp : words) {
+        pieces.emplace_back(text, offset[sp.first], offset[sp.second] - offset[sp.first]);
+    }
+    return pieces;
+}
+
 // ---------------- BPE core ----------------
 
 std::string BpeTokenizer::PairKey(const std::string& a, const std::string& b) {
@@ -270,6 +431,15 @@ const std::vector<std::string>& BpeTokenizer::BpeForPieceCached(const std::strin
 
 std::vector<std::string> BpeTokenizer::BpeForPiece(const std::string& piece) const {
     std::vector<std::string> symbols = Utf8Chars(piece);
+    if (use_byte_encoder_ && special_ids_.unk_id < 0) {
+        // Like Hugging Face BPE without an unk token: characters outside the vocab (e.g. the
+        // byte-level char for '\r') are dropped before merging, so they do not block merges.
+        symbols.erase(std::remove_if(symbols.begin(), symbols.end(),
+                                     [this](const std::string& sym) {
+                                         return token_to_id_.find(sym) == token_to_id_.end();
+                                     }),
+                      symbols.end());
+    }
     if (symbols.size() <= 1) return symbols;
 
     while (symbols.size() >= 2) {
@@ -472,12 +642,12 @@ std::vector<int> BpeTokenizer::encode(const std::string& text, bool add_bos, boo
         if (buffer.empty()) return;
 
         if (use_byte_encoder_) {
-            // Mode 2: Byte-Level Encoding
-            // Encode raw bytes to mapped unicode chars
-            std::string encoded_s = ByteEncode(buffer);
-            // Perform BPE on the entire encoded string
-            const auto& toks = BpeForPieceCached(encoded_s);
-            TokensToIds(toks, ids);
+            // Mode 2: Byte-Level Encoding. Pretokenize, map each piece's raw bytes to unicode
+            // chars, then run BPE per piece.
+            for (const auto& piece : PretokenizeHunyuan(buffer)) {
+                const auto& toks = BpeForPieceCached(ByteEncode(piece));
+                TokensToIds(toks, ids);
+            }
         } else {
             auto pieces = PretokenizeSentencePiece(buffer);
             for (const auto& p : pieces) {
@@ -541,11 +711,13 @@ std::string BpeTokenizer::decode(const std::vector<int>& ids, bool skip_special_
 
         if (skip_special_tokens && is_special) continue;
 
-        if (tok == "\\t")
+        // Byte-level vocab entries are literal strings (e.g. the two characters backslash-n are a
+        // real token), so only the SentencePiece vocab uses them as escaped control characters.
+        if (!use_byte_encoder_ && tok == "\\t")
             s += '\t';
-        else if (tok == "\\n")
+        else if (!use_byte_encoder_ && tok == "\\n")
             s += '\n';
-        else if (tok == "\\r")
+        else if (!use_byte_encoder_ && tok == "\\r")
             s += '\r';
         else
             s += tok;
