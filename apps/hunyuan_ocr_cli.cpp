@@ -17,6 +17,8 @@ struct Arguments {
     int threads = 4;
     int max_new_tokens = 1024;
     int vulkan_device = -1;
+    long long min_pixels = 0;
+    long long max_pixels = 0;
     float repetition_penalty = 1.08F;
     hunyuan_ocr::VulkanPrecision vulkan_precision = hunyuan_ocr::VulkanPrecision::Fp32;
     bool prefill_only = false;
@@ -29,7 +31,8 @@ void print_usage(const char* executable) {
                  "Usage: %s --image FILE [--model DIR] [--prompt TEXT] [--threads N] "
                  "[--vulkan-device INDEX] "
                  "[--vulkan-precision fp32|mixed] "
-                 "[--max-new-tokens N] [--repetition-penalty P] [--dflash] [--prefill-only] "
+                 "[--max-new-tokens N] [--repetition-penalty P] [--min-pixels N] "
+                 "[--max-pixels N] [--dflash] [--prefill-only] "
                  "[--profile] "
                  "[--json-output FILE]\n",
                  executable);
@@ -58,6 +61,10 @@ Arguments parse_arguments(int argc, char** argv) {
             arguments.max_new_tokens = std::stoi(require_value(argc, argv, index));
         } else if (option == "--repetition-penalty") {
             arguments.repetition_penalty = std::stof(require_value(argc, argv, index));
+        } else if (option == "--min-pixels") {
+            arguments.min_pixels = std::stoll(require_value(argc, argv, index));
+        } else if (option == "--max-pixels") {
+            arguments.max_pixels = std::stoll(require_value(argc, argv, index));
         } else if (option == "--vulkan-device") {
             arguments.vulkan_device = std::stoi(require_value(argc, argv, index));
         } else if (option == "--vulkan-precision") {
@@ -211,6 +218,8 @@ int main(int argc, char** argv) {
         runtime_options.vulkan_device = arguments.vulkan_device;
         runtime_options.vulkan_precision = arguments.vulkan_precision;
         runtime_options.enable_dflash = arguments.dflash;
+        runtime_options.min_pixels = arguments.min_pixels;
+        runtime_options.max_pixels = arguments.max_pixels;
         hunyuan_ocr::Runtime runtime(arguments.model_directory, runtime_options);
 
         hunyuan_ocr::Result result;

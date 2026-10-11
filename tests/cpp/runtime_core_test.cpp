@@ -147,6 +147,36 @@ void test_hunyuan_image_preprocessor() {
     require_close(output.pixel_values.channel(2).row(0)[0], 10.0f / 255.0f, 1e-6f, "blue channel");
 }
 
+void test_smart_resize_matches_official() {
+    HunyuanVisionPreprocessConfig config;
+    config.min_pixels = 262144;
+    config.max_pixels = 16777216;
+    const HunyuanVisionPreprocessor preprocessor(config);
+    // Expected sizes come from transformers 5.13.0 HunYuanVL smart_resize (factor 32).
+    const int cases[][4] = {
+        {640, 1152, 640, 1152},
+        {1650, 850, 1664, 864},
+        {4000, 6000, 3328, 4992},
+        {100, 100, 512, 512},
+    };
+    for (const auto& item : cases) {
+        int target_h = 0;
+        int target_w = 0;
+        preprocessor.smart_resize(item[0], item[1], target_h, target_w);
+        require_true(target_h == item[2] && target_w == item[3], "smart_resize official size");
+    }
+
+    bool rejected = false;
+    try {
+        int target_h = 0;
+        int target_w = 0;
+        preprocessor.smart_resize(33, 7000, target_h, target_w);
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    require_true(rejected, "smart_resize rejects aspect ratios above 200");
+}
+
 void test_merge_grouped_patch_order() {
     HunyuanVisionPreprocessConfig config;
     config.patch_size = 16;
@@ -239,6 +269,7 @@ int main() {
     test_dflash_commit_plan_preserves_accepted_eos();
     test_batch_mat_layout();
     test_hunyuan_image_preprocessor();
+    test_smart_resize_matches_official();
     test_merge_grouped_patch_order();
     test_runtime_option_defaults();
     test_standard_rope();

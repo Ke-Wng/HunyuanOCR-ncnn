@@ -619,7 +619,7 @@ def write_model_json(
     out_dir: Path,
     dflash_config: dict[str, Any] | None = None,
     *,
-    max_pixels: int = 262144,
+    max_pixels: int | None = None,
     min_pixels: int | None = None,
 ) -> None:
     cfg = json.loads((model_path / "config.json").read_text(encoding="utf-8"))
@@ -630,6 +630,10 @@ def write_model_json(
         for _, v in sorted(tokenizer_cfg["added_tokens_decoder"].items(), key=lambda kv: int(kv[0]))
     ]
     eos_ids = resolve_eos_ids(model_path, tokenizer_cfg)
+    # HunYuanVL's processor lets the legacy min/max_pixels keys override `size`.
+    size = pre.get("size", {})
+    source_min_pixels = pre.get("min_pixels", size.get("shortest_edge"))
+    source_max_pixels = pre.get("max_pixels", size.get("longest_edge"))
 
     params = {
         "vision_backend": "full_dynamic_ncnn",
@@ -687,8 +691,10 @@ def write_model_json(
                 "patch_size": pre["patch_size"],
                 "spatial_merge_size": pre["merge_size"],
                 "vision_hidden_size": cfg["vision_config"]["hidden_size"],
-                "min_pixels": pre["min_pixels"] if min_pixels is None else min_pixels,
-                "max_pixels": min(pre["max_pixels"], max_pixels),
+                "min_pixels": source_min_pixels if min_pixels is None else min_pixels,
+                "max_pixels": (
+                    source_max_pixels if max_pixels is None else min(source_max_pixels, max_pixels)
+                ),
                 "image_mean": pre["image_mean"],
                 "image_std": pre["image_std"],
             },
@@ -740,9 +746,9 @@ def main() -> None:
     parser.add_argument(
         "--max-pixels",
         type=int,
-        default=262144,
-        help="clamp the preprocessed image area to this many pixels (default 262144); "
-        "the source processor value is used when it is smaller",
+        default=None,
+        help="clamp the default preprocessed image area to this many pixels; defaults to the "
+        "official processor limit (the runtime can still lower it per run)",
     )
     parser.add_argument(
         "--min-pixels",

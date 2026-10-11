@@ -33,11 +33,10 @@ class HunyuanVisionPreprocessor {
     const HunyuanVisionPreprocessConfig& config() const { return config_; }
 
     HunyuanVisionInput process(const ncnn::Mat& bgr) const;
+    void smart_resize(int img_h, int img_w, int& target_h, int& target_w) const;
 
    private:
     HunyuanVisionPreprocessConfig config_;
-
-    void smart_resize(int img_h, int img_w, int& target_h, int& target_w) const;
 };
 
 }  // namespace hunyuan_ocr::internal

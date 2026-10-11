@@ -17,6 +17,11 @@ struct RuntimeOptions {
     int vulkan_device = -1;
     VulkanPrecision vulkan_precision = VulkanPrecision::Fp32;
     bool enable_dflash = false;
+    // Bounds on the preprocessed image area; 0 keeps the model package value.
+    // Lowering max_pixels trades fine detail for speed: vision cost grows
+    // roughly quadratically with the number of image patches.
+    long long min_pixels = 0;
+    long long max_pixels = 0;
 };
 
 struct GenerationOptions {

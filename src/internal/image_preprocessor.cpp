@@ -31,10 +31,14 @@ void HunyuanVisionPreprocessor::smart_resize(int img_h, int img_w, int& target_h
         throw std::runtime_error("invalid vision patch configuration");
     }
 
+    // Mirrors the official HunYuanVL smart_resize, including its aspect-ratio limit.
+    if (std::max(img_h, img_w) > 200LL * std::min(img_h, img_w)) {
+        throw std::runtime_error("image aspect ratio must be at most 200:1");
+    }
     const long long factor = (long long)config_.patch_size * config_.spatial_merge_size;
     const double area = (double)img_h * (double)img_w;
-    long long h_bar = std::max(factor, round_half_even((double)img_h / (double)factor) * factor);
-    long long w_bar = std::max(factor, round_half_even((double)img_w / (double)factor) * factor);
+    long long h_bar = round_half_even((double)img_h / (double)factor) * factor;
+    long long w_bar = round_half_even((double)img_w / (double)factor) * factor;
 
     if (config_.max_pixels > 0 && h_bar * w_bar > config_.max_pixels) {
         const double beta = std::sqrt(area / (double)config_.max_pixels);
@@ -46,6 +50,9 @@ void HunyuanVisionPreprocessor::smart_resize(int img_h, int img_w, int& target_h
         w_bar = (long long)std::ceil(img_w * beta / factor) * factor;
     }
 
+    if (h_bar < factor || w_bar < factor) {
+        throw std::runtime_error("image is too small for one merged vision patch; raise min_pixels");
+    }
     target_h = (int)h_bar;
     target_w = (int)w_bar;
 }

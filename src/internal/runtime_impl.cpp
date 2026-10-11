@@ -126,6 +126,9 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
         throw std::invalid_argument(
             "non-FP32 Vulkan precision requires a non-negative vulkan_device");
     }
+    if (options.min_pixels < 0 || options.max_pixels < 0) {
+        throw std::invalid_argument("min_pixels and max_pixels must be non-negative");
+    }
 #if !NCNN_VULKAN
     if (options.vulkan_device >= 0) {
         throw std::runtime_error("Vulkan was requested, but ncnn was built without NCNN_VULKAN");
@@ -376,6 +379,14 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
             }
             preprocess_config.min_pixels = vision_cfg.value("min_pixels", 262144LL);
             preprocess_config.max_pixels = vision_cfg.value("max_pixels", 4194304LL);
+            if (options.min_pixels > 0) preprocess_config.min_pixels = options.min_pixels;
+            if (options.max_pixels > 0) preprocess_config.max_pixels = options.max_pixels;
+            const long long factor = (long long)patch_size * spatial_merge_size_;
+            if (preprocess_config.max_pixels < factor * factor ||
+                preprocess_config.min_pixels > preprocess_config.max_pixels) {
+                throw std::invalid_argument(
+                    "max_pixels must cover one merged patch and be >= min_pixels");
+            }
             const auto mean = vision_cfg["image_mean"].get<std::vector<float>>();
             const auto std_values = vision_cfg["image_std"].get<std::vector<float>>();
             if (mean.size() != 3 || std_values.size() != 3) {

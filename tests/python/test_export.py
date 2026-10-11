@@ -354,6 +354,20 @@ def test_unknown_tokenizer_eos_token_is_rejected(tmp_path):
         write_model_json(snapshot, output)
 
 
+def test_pixel_limits_default_to_source_processor(tmp_path):
+    snapshot = make_snapshot(tmp_path / "snapshot")
+    output = tmp_path / "output"
+    output.mkdir()
+
+    write_model_json(snapshot, output)
+    vision = json.loads((output / "model.json").read_text(encoding="utf-8"))["setting"]["vision"]
+    assert (vision["min_pixels"], vision["max_pixels"]) == (65536, 262144)
+
+    write_model_json(snapshot, output, max_pixels=100000)
+    vision = json.loads((output / "model.json").read_text(encoding="utf-8"))["setting"]["vision"]
+    assert vision["max_pixels"] == 100000
+
+
 def test_v15_ar_model_does_not_require_dflash_export(tmp_path):
     snapshot = make_snapshot(tmp_path / "snapshot")
     output = tmp_path / "output"
