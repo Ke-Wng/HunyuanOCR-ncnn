@@ -6,8 +6,10 @@
 #include <string>
 
 #include "hunyuan_ocr/runtime.h"
+#include "internal/profile_json.h"
 
 namespace {
+using hunyuan_ocr::internal::profile_json;
 using nlohmann::json;
 
 std::string option(int argc, char** argv, const std::string& name, const std::string& fallback) {
@@ -22,37 +24,6 @@ bool flag(int argc, char** argv, const std::string& name) {
         if (argv[index] == name) return true;
     }
     return false;
-}
-
-json profile_json(const hunyuan_ocr::Profile& profile) {
-    return {
-        {"backend", profile.backend},
-        {"requested_precision", profile.requested_precision},
-        {"vision_storage", profile.vision_storage},
-        {"decoder_storage", profile.decoder_storage},
-        {"dflash_storage", profile.dflash_storage},
-        {"lm_head_storage", profile.lm_head_storage},
-        {"vulkan_device", profile.vulkan_device >= 0 ? json(profile.vulkan_device) : json(nullptr)},
-        {"preprocess_seconds", profile.preprocess_seconds},
-        {"vision_seconds", profile.vision_seconds},
-        {"tokenize_seconds", profile.tokenize_seconds},
-        {"text_embed_seconds", profile.text_embed_seconds},
-        {"rope_seconds", profile.rope_seconds},
-        {"decoder_seconds", profile.decoder_seconds},
-        {"lm_head_seconds", profile.lm_head_seconds},
-        {"dflash_seconds", profile.dflash_seconds},
-        {"verification_seconds", profile.verification_seconds},
-        {"total_seconds", profile.total_seconds},
-        {"target_w", profile.target_width},
-        {"target_h", profile.target_height},
-        {"grid_w", profile.grid_width},
-        {"grid_h", profile.grid_height},
-        {"vision_tokens", profile.vision_tokens},
-        {"seq_len", profile.sequence_length},
-        {"dflash_blocks", profile.dflash_blocks},
-        {"dflash_accepted_tokens", profile.dflash_accepted_tokens},
-        {"dflash_drafted_tokens", profile.dflash_drafted_tokens},
-    };
 }
 
 }  // namespace

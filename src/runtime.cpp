@@ -10,19 +10,18 @@
 namespace hunyuan_ocr {
 namespace {
 
-Result make_result(const std::shared_ptr<internal::Context>& context, const Profile& profile,
+Result make_result(const internal::Context& context, const Profile& profile,
                    const std::string& raw_text = {}) {
     Result result;
     // BBPE can stop in the middle of a code point (e.g. at max_new_tokens); keep the public
     // strings valid UTF-8 by replacing any ill-formed or truncated tail with U+FFFD.
     result.raw_text = internal::sanitize_utf8(raw_text);
     result.final_text = internal::clean_repeated_substrings(result.raw_text);
-    result.text = result.final_text;
-    result.token_ids = context->generated_tokens;
-    result.current_token = context->current_token;
-    result.stop_token = context->stop_token;
-    result.position = context->position;
-    result.stop_reason = context->stop_reason;
+    result.token_ids = context.generated_tokens;
+    result.current_token = context.current_token;
+    result.stop_token = context.stop_token;
+    result.position = context.position;
+    result.stop_reason = context.stop_reason;
     result.profile = profile;
     return result;
 }
@@ -32,10 +31,9 @@ Result make_result(const std::shared_ptr<internal::Context>& context, const Prof
 class Runtime::Impl {
    public:
     Impl(const std::string& model_directory, const RuntimeOptions& options)
-        : engine(model_directory, options), dflash_enabled(options.enable_dflash) {}
+        : engine(model_directory, options) {}
 
     internal::Engine engine;
-    bool dflash_enabled = false;
 };
 
 Runtime::Runtime(const std::string& model_directory, const RuntimeOptions& options)
@@ -77,7 +75,7 @@ Result Runtime::recognize(const std::string& image_path, const std::string& prom
     if (!std::isfinite(options.repetition_penalty) || options.repetition_penalty <= 0.0F) {
         throw std::invalid_argument("repetition_penalty must be finite and positive");
     }
-    if (impl_->dflash_enabled && options.do_sample) {
+    if (impl_->engine.dflash_enabled() && options.do_sample) {
         throw std::invalid_argument("DFlash currently supports greedy decoding only");
     }
 
@@ -91,7 +89,7 @@ Result Runtime::recognize(const std::string& image_path, const std::string& prom
     // Decode the complete sequence once.  BBPE tokens may split a UTF-8 codepoint,
     // so concatenating one-token decodes is not equivalent to decoding the sequence.
     return make_result(generated, impl_->engine.profile(),
-                       impl_->engine.decode(generated->generated_tokens));
+                       impl_->engine.decode(generated.generated_tokens));
 }
 
 }  // namespace hunyuan_ocr

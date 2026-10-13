@@ -33,8 +33,8 @@ flowchart LR
 
 ## 状态与资源
 
-`Runtime::Impl` 持有 Engine，Engine 持有模型网络和 Vulkan 分配器。`Context` 保存一次推理的目标/草稿 KV、位置、token 历史和停止状态。`Context::clone()` 保持 ncnn 张量的引用计数复制语义。
+`Runtime::Impl` 持有 Engine，Engine 独占持有模型网络和 tokenizer，并管理 Vulkan 分配器。`Context` 按值返回和复制，保存一次推理的目标/草稿 KV、位置、token 历史和停止状态；ncnn 张量保持引用计数复制语义。生成循环直接更新 Context 的 token 历史，DFlash 验证仍使用独立的候选历史。
 
 Vulkan 执行先提交并等待命令完成，再替换缓存并回收空闲缓冲区。Engine 释放资源时先清理网络，再释放分配器。修改这些顺序时，需要单独验证缓存和分配器的生命周期。
 
-本次拆分保留公开 API、生成算法、精度策略和资源释放顺序。后续改动的验证入口见 [回归验证说明](validation.md)。
+生成算法、精度策略和资源释放顺序保持原有行为。公开 Result 文本字段的迁移说明见 README；后续改动的验证入口见 [回归验证说明](validation.md)。

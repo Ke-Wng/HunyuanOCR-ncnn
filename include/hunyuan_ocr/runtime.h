@@ -81,11 +81,9 @@ struct Profile {
 
 struct Result {
     // `raw_text` is the complete tokenizer decode of `token_ids`; `final_text` is
-    // the deterministic post-processing layer.  `text` is kept as the public
-    // compatibility alias for `final_text`.  All three are valid UTF-8: BBPE tokens can
+    // the deterministic post-processing layer. Both are valid UTF-8: BBPE tokens can
     // split a code point, so a byte sequence left incomplete or ill-formed (for example when
     // max_new_tokens cuts a character) is replaced by U+FFFD.
-    std::string text;
     std::string raw_text;
     std::string final_text;
     std::vector<int> token_ids;

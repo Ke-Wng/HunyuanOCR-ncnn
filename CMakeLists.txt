@@ -95,6 +95,7 @@ endif()
 
 if(HUNYUAN_OCR_BUILD_CLI)
     add_executable(hunyuan_ocr_cli apps/hunyuan_ocr_cli.cpp)
+    target_include_directories(hunyuan_ocr_cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     set_target_properties(hunyuan_ocr_cli PROPERTIES OUTPUT_NAME hunyuan-ocr)
     target_link_libraries(hunyuan_ocr_cli PRIVATE HunyuanOCRncnn::runtime nlohmann_json::nlohmann_json)
 endif()

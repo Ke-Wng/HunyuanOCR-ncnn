@@ -68,15 +68,12 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
         throw std::runtime_error("Vulkan was requested, but ncnn was built without NCNN_VULKAN");
     }
 #endif
-    use_vulkan_ = options.vulkan_device >= 0;
     vulkan_device_ = options.vulkan_device;
     vulkan_precision_ = options.vulkan_precision;
-    enable_dflash_ = options.enable_dflash;
-    if (enable_dflash_) dflash_storage_ = "fp32";
 
     try {
 #if NCNN_VULKAN
-        if (use_vulkan_) {
+        if (use_vulkan()) {
             if (ncnn::create_gpu_instance() != 0) {
                 throw std::runtime_error("failed to initialize ncnn Vulkan instance");
             }
@@ -116,11 +113,12 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
         if (model_format != "hunyuan_ocr_ncnn_v3") {
             throw std::runtime_error("HunyuanOCR v1.5 requires model_format hunyuan_ocr_ncnn_v3");
         }
-        if (enable_dflash_ && !config["setting"].contains("dflash")) {
+        if (options.enable_dflash && !config["setting"].contains("dflash")) {
             throw std::runtime_error(
                 "DFlash was requested, but this model package has no DFlash graph");
         }
-        if (enable_dflash_ && !config["setting"]["dflash"].value("split_causal_mask", false)) {
+        if (options.enable_dflash &&
+            !config["setting"]["dflash"].value("split_causal_mask", false)) {
             throw std::runtime_error(
                 "DFlash requires split causal-mask model graphs; re-export this model package");
         }
@@ -128,11 +126,11 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
             throw std::runtime_error("setting.kv_cache must be true");
         }
 
-        vision_net_ = std::make_shared<ncnn::Net>();
-        text_embed_net_ = std::make_shared<ncnn::Net>();
-        text_decoder_net_ = std::make_shared<ncnn::Net>();
-        lm_head_net_ = std::make_shared<ncnn::Net>();
-        if (enable_dflash_) dflash_net_ = std::make_shared<ncnn::Net>();
+        vision_net_ = std::make_unique<ncnn::Net>();
+        text_embed_net_ = std::make_unique<ncnn::Net>();
+        text_decoder_net_ = std::make_unique<ncnn::Net>();
+        lm_head_net_ = std::make_unique<ncnn::Net>();
+        if (options.enable_dflash) dflash_net_ = std::make_unique<ncnn::Net>();
 
         vision_net_->opt.num_threads = num_threads;
         text_embed_net_->opt.num_threads = num_threads;
@@ -145,7 +143,7 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
         if (dflash_net_) disable_low_precision(dflash_net_->opt);
 
 #if NCNN_VULKAN
-        if (use_vulkan_) {
+        if (use_vulkan()) {
             configure_vulkan_net(*vision_net_, vkdev_, blob_vkallocator_, staging_vkallocator_);
             configure_vulkan_net(*text_decoder_net_, vkdev_, blob_vkallocator_,
                                  staging_vkallocator_);
@@ -157,10 +155,8 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
             if (vulkan_precision_ == VulkanPrecision::Mixed) {
                 // Vision LayerNorm squares can overflow FP16 storage, so keep the
                 // vision tower in FP32 and reduce storage only for Decoder/KV.
-                vision_storage_ = "fp32";
                 if (vkdev_->info.support_bf16_storage()) {
                     text_decoder_net_->opt.use_bf16_storage = true;
-                    decoder_storage_ = "bf16";
                 } else {
                     if (!vkdev_->info.support_fp16_storage()) {
                         throw std::runtime_error(
@@ -168,7 +164,6 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
                     }
                     text_decoder_net_->opt.use_fp16_storage = true;
                     text_decoder_net_->opt.use_fp16_arithmetic = false;
-                    decoder_storage_ = "fp16";
                 }
             }
         }
@@ -213,7 +208,7 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
             throw std::runtime_error("failed to load one or more ncnn param/bin files");
         }
 #if NCNN_VULKAN
-        if (use_vulkan_ &&
+        if (use_vulkan() &&
             (!vision_net_->opt.use_vulkan_compute || !text_decoder_net_->opt.use_vulkan_compute ||
              !lm_head_net_->opt.use_vulkan_compute ||
              (dflash_net_ && !dflash_net_->opt.use_vulkan_compute))) {
@@ -234,7 +229,7 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
         std::string merges_file =
             model_path + "/" + config["tokenizer"]["merges_file"].get<std::string>();
 
-        tokenizer_ = std::make_shared<BpeTokenizer>(BpeTokenizer::LoadFromFiles(
+        tokenizer_ = std::make_unique<BpeTokenizer>(BpeTokenizer::LoadFromFiles(
             vocab_file, merges_file, SpecialTokensConfig{}, false, true, true));
 
         std::vector<std::string> additional_special_tokens =
@@ -263,7 +258,7 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
         if (config["setting"].contains("image_token_id")) {
             image_token_id_ = config["setting"]["image_token_id"].get<int>();
         }
-        if (enable_dflash_) {
+        if (options.enable_dflash) {
             const json& draft = config["setting"]["dflash"];
             dflash_attention_layers_ = draft.value("attention_layers", 5);
             dflash_head_dimension_ = draft.value("head_dim", 128);

@@ -5,7 +5,8 @@ v1.5 的 ncnn 推理实现，支持 CPU FP32、Vulkan FP32/Mixed 与 DFlash 贪�
 项目覆盖从可变尺寸图像预处理、视觉编码、图文 token 拼接、xdRoPE 到带 KV Cache
 的文本解码完整链路，并交付命令行程序 `hunyuan-ocr` 与可安装的 C++17 静态库。
 
-设计原理、验证方法与性能数据见 [docs/report.md](docs/report.md)。
+模块职责见 [运行时结构](docs/architecture.md)，验证入口见 [回归验证说明](docs/validation.md)。
+设计原理与历史性能测量见 [技术报告](docs/report.md)。
 
 ## 环境要求
 
@@ -165,6 +166,10 @@ target_link_libraries(your_app PRIVATE HunyuanOCRncnn::runtime)
 
 公共头文件为 `include/hunyuan_ocr/runtime.h`。`hunyuan_ocr::Runtime` 使用 pImpl，公共
 接口不暴露 ncnn 类型。
+
+`Result.raw_text` 保存 token 完整解码后的 UTF-8 文本，`Result.final_text` 保存去重复处理后的文本。
+重复字段 `Result.text` 已移除，现有 C++ 调用方请改用 `Result.final_text` 并重新编译。
+CLI JSON 的 `generated_text`、`raw_text` 和 `final_text` 字段保持现有格式。
 
 ## 许可
 

@@ -563,6 +563,16 @@ void test_runtime_rejects_invalid_state_and_options() {
     require_throws<std::logic_error>([&] { runtime.recognize("x.png", "p"); },
                                      "moved-from recognize");
     require_throws<std::logic_error>([&] { runtime.prefill("x.png", "p"); }, "moved-from prefill");
+
+    hunyuan_ocr::RuntimeOptions draft_options;
+    draft_options.enable_dflash = true;
+    hunyuan_ocr::Runtime draft_runtime(model, draft_options);
+    options = {};
+    options.do_sample = true;
+    options.temperature = 1.0F;
+    require_throws<std::invalid_argument>(
+        [&] { draft_runtime.recognize("x.png", "p", options); },
+        "enabled DFlash rejects sampling before trying to load the image");
 }
 
 const unsigned char kJpeg16[] = {

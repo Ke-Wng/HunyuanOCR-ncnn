@@ -23,15 +23,14 @@ ncnn::Mat Engine::run_vision(const ncnn::Mat& pixel_values) const {
     return feats;
 }
 
-std::shared_ptr<Context> Engine::prefill(const std::string& prompt_text,
-                                         const ncnn::Mat& bgr_image) {
+Context Engine::prefill(const std::string& prompt_text, const ncnn::Mat& bgr_image) {
     Profile profile;
-    profile.backend = use_vulkan_ ? "vulkan" : "cpu";
+    profile.backend = use_vulkan() ? "vulkan" : "cpu";
     profile.requested_precision = vulkan_precision_ == VulkanPrecision::Mixed ? "mixed" : "fp32";
-    profile.vision_storage = vision_storage_;
-    profile.decoder_storage = decoder_storage_;
-    profile.dflash_storage = dflash_storage_;
-    profile.lm_head_storage = "fp32";
+    profile.decoder_storage = text_decoder_net_->opt.use_bf16_storage   ? "bf16"
+                              : text_decoder_net_->opt.use_fp16_storage ? "fp16"
+                                                                        : "fp32";
+    profile.dflash_storage = dflash_enabled() ? "fp32" : "disabled";
     profile.vulkan_device = vulkan_device_;
     const auto total_begin = std::chrono::steady_clock::now();
 
@@ -141,16 +140,16 @@ std::shared_ptr<Context> Engine::prefill(const std::string& prompt_text,
     ncnn::Mat decode_out;
     ncnn::Mat target_features;
 #if NCNN_VULKAN
-    if (use_vulkan_) {
+    if (use_vulkan()) {
         decode_out = llm_run_decoder_with_kv_vulkan(
             *text_decoder_net_, token_embed, mask, cos_cache, sin_cache, vulkan_kv_cache,
-            attention_layers_, true, enable_dflash_ ? &target_features : nullptr);
+            attention_layers_, true, dflash_enabled() ? &target_features : nullptr);
     } else
 #endif
     {
         decode_out = llm_run_decoder_with_kv(*text_decoder_net_, token_embed, mask, cos_cache,
                                              sin_cache, kv_cache, attention_layers_, true,
-                                             enable_dflash_ ? &target_features : nullptr);
+                                             dflash_enabled() ? &target_features : nullptr);
     }
     const auto decoder_end = std::chrono::steady_clock::now();
     profile.decoder_seconds = elapsed_seconds(decoder_begin, decoder_end);
@@ -165,21 +164,21 @@ std::shared_ptr<Context> Engine::prefill(const std::string& prompt_text,
     profile.total_seconds = elapsed_seconds(total_begin, lm_head_end);
     profile_ = profile;
 
-    auto ctx = std::make_shared<Context>();
-    ctx->kv_cache = std::move(kv_cache);
-    ctx->target_features = std::move(target_features);
+    Context ctx;
+    ctx.kv_cache = std::move(kv_cache);
+    ctx.target_features = std::move(target_features);
 #if NCNN_VULKAN
-    ctx->vulkan_kv_cache = std::move(vulkan_kv_cache);
+    ctx.vulkan_kv_cache = std::move(vulkan_kv_cache);
 #endif
-    ctx->use_vulkan = use_vulkan_;
-    ctx->current_token = next_token_id;
-    ctx->next_logits = logits.clone();
-    ctx->token_history.insert(token_ids.begin(), token_ids.end());
-    ctx->position = sequence_length;
-    ctx->generated_tokens.push_back(next_token_id);
+    ctx.use_vulkan = use_vulkan();
+    ctx.current_token = next_token_id;
+    ctx.next_logits = logits.clone();
+    ctx.token_history.insert(token_ids.begin(), token_ids.end());
+    ctx.position = sequence_length;
+    ctx.generated_tokens.push_back(next_token_id);
     if (eos_ids_.count(next_token_id)) {
-        ctx->stop_token = next_token_id;
-        ctx->stop_reason = StopReason::Eos;
+        ctx.stop_token = next_token_id;
+        ctx.stop_reason = StopReason::Eos;
     }
     return ctx;
 }
