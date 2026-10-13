@@ -192,7 +192,7 @@ def strict_command(sample: dict, profile: str, report_path: Path) -> list[str]:
 
 
 def ar_profile(profile: str) -> str:
-    return profile.removesuffix("_dflash")
+    return profile.removesuffix("_dflash") + "_ar" if profile.endswith("_dflash") else profile
 
 
 def strict_golden_path(sample: dict, profile: str) -> Path:
@@ -208,7 +208,8 @@ def strict_golden_path(sample: dict, profile: str) -> Path:
             raise pytest.UsageError(
                 f"sample {sample['id']} has no golden for independent profile {ar_name}"
             ) from exc
-    return ROOT / "tests" / "data" / relative
+    golden_root = Path(os.environ.get("HUNYUAN_OCR_GOLDEN_ROOT", ROOT / "tests" / "data"))
+    return golden_root / relative
 
 
 @pytest.mark.skipif(
