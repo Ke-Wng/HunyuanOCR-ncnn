@@ -34,7 +34,9 @@ inline DFlashCommitPlan make_dflash_commit_plan(int accepted_drafts, int remaini
             break;
         }
     }
-    plan.commit_count = plan.emitted_drafts + 1;
+    // AR emits EOS without forwarding it through the decoder. Keep its
+    // position/cache contract even when the draft accepted EOS inside a block.
+    plan.commit_count = plan.emitted_drafts + 1 - (plan.accepted_eos ? 1 : 0);
     if (plan.accepted_eos) {
         plan.next_token = plan.stop_token;
     } else {

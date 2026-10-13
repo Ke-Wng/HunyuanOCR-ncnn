@@ -107,10 +107,18 @@ void test_dflash_commit_plan_preserves_accepted_eos() {
     const std::vector<int> posterior = {11, 99, 0, 0};
     const DFlashCommitPlan plan = make_dflash_commit_plan(2, 3, verification_ids, posterior, {99});
     require_true(plan.emitted_drafts == 2, "DFlash commit must include accepted EOS");
-    require_true(plan.commit_count == 3, "DFlash EOS commit count");
+    require_true(plan.commit_count == 2, "DFlash cache excludes the emitted EOS, like AR");
     require_true(plan.accepted_eos, "DFlash commit must report accepted EOS");
     require_true(plan.stop_token == 99, "DFlash stop token must be accepted EOS");
     require_true(plan.next_token == 99, "DFlash terminal current token must remain EOS");
+}
+
+void test_dflash_commit_plan_excludes_first_draft_eos_from_cache() {
+    const DFlashCommitPlan plan = make_dflash_commit_plan(2, 1, {10, 99, 12}, {99, 12, 13}, {99});
+    require_true(plan.emitted_drafts == 1 && plan.accepted_eos,
+                 "first accepted EOS is emitted within the remaining budget");
+    require_true(plan.commit_count == 1, "only the preceding non-EOS token enters cache");
+    require_true(plan.next_token == 99 && plan.stop_token == 99, "terminal token remains EOS");
 }
 
 void test_batch_mat_layout() {
@@ -660,6 +668,7 @@ int main() {
     test_sampling_argmax_with_repetition_penalty();
     test_dflash_commit_plan_caps_to_budget();
     test_dflash_commit_plan_preserves_accepted_eos();
+    test_dflash_commit_plan_excludes_first_draft_eos_from_cache();
     test_batch_mat_layout();
     test_hunyuan_image_preprocessor();
     test_smart_resize_matches_official();
