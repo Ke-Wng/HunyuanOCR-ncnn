@@ -137,9 +137,10 @@ HUNYUAN_OCR_RUN_IMAGE_REPLAY=1 .venv/bin/pytest -q tests/python/test_image_visio
 
 ```bash
 .venv/bin/python -m tools.validation.generate_e2e_reference \
-  --out-root tests/data --model-path /path/to/HunyuanOCR
+  --out-root /path/to/goldens --model-path /path/to/HunyuanOCR \
+  --runtime-model assets/hunyuan_ocr --max-new-tokens 4096
 HUNYUAN_OCR_RUN_E2E=1 HUNYUAN_OCR_RUN_STRICT_E2E=1 \
-HUNYUAN_OCR_E2E_PROFILES=cpu_ar \
+HUNYUAN_OCR_E2E_PROFILES=cpu_ar HUNYUAN_OCR_GOLDEN_ROOT=/path/to/goldens \
 .venv/bin/pytest -q tests/python/test_e2e.py -k strict_profile
 ```
 
