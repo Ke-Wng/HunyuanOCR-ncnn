@@ -98,6 +98,17 @@ if(BUILD_TESTING)
     target_link_libraries(runtime_core_test PRIVATE HunyuanOCRncnn::runtime ncnn)
     add_test(NAME runtime_core COMMAND runtime_core_test)
 
+    add_executable(tokenizer_parity_test tests/cpp/tokenizer_parity_test.cpp)
+    target_include_directories(tokenizer_parity_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(tokenizer_parity_test PRIVATE HunyuanOCRncnn::runtime ncnn nlohmann_json::nlohmann_json)
+    add_test(
+        NAME tokenizer_parity
+        COMMAND tokenizer_parity_test
+            ${CMAKE_CURRENT_SOURCE_DIR}/assets/hunyuan_ocr
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/tokenizer_parity.json
+    )
+    set_tests_properties(tokenizer_parity PROPERTIES SKIP_RETURN_CODE 77)
+
     foreach(tool IN ITEMS vision_replay image_vision_replay lm_head_replay dflash_replay benchmark)
         add_executable(${tool} tests/cpp/${tool}.cpp)
         target_include_directories(${tool} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
