@@ -11,7 +11,7 @@ v1.5 的 ncnn 推理实现，支持 CPU FP32、Vulkan FP32/Mixed 与 DFlash 贪�
 ## 环境要求
 
 - Linux x86-64
-- CMake 3.16+
+- CMake 3.25+（使用仓库的 presets）
 - 支持 OpenMP 的 C++17 编译器
 - nlohmann_json CMake package
 - libjpeg-turbo development package
@@ -21,10 +21,10 @@ v1.5 的 ncnn 推理实现，支持 CPU FP32、Vulkan FP32/Mixed 与 DFlash 贪�
 ## 构建
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/Ke-Wng/HunyunOCR-ncnn.git HunyuanOCR-ncnn
 cd HunyuanOCR-ncnn
 git submodule update --init --recursive
-cmake --preset release
+cmake --preset release -DHUNYUAN_OCR_REQUIRE_LIBJPEG=ON
 cmake --build --preset release -j
 ctest --preset release
 ```
@@ -35,7 +35,8 @@ ctest --preset release
 git submodule update --init --recursive
 cmake -S . -B build-vulkan \
   -DCMAKE_BUILD_TYPE=Release \
-  -DNCNN_VULKAN=ON
+  -DNCNN_VULKAN=ON \
+  -DHUNYUAN_OCR_REQUIRE_LIBJPEG=ON
 cmake --build build-vulkan -j
 ctest --test-dir build-vulkan --output-on-failure
 ```
@@ -163,6 +164,17 @@ cmake --install build --prefix /path/to/install
 find_package(HunyuanOCRncnn 0.1 REQUIRED)
 target_link_libraries(your_app PRIVATE HunyuanOCRncnn::runtime)
 ```
+
+安装后的 CMake 接入与实际静态库链接可用仓库内的 consumer 检查：
+
+```bash
+cmake -S tests/cmake/consumer -B build-consumer \
+  -DCMAKE_PREFIX_PATH=/path/to/install
+cmake --build build-consumer -j
+./build-consumer/hunyuan_ocr_consumer
+```
+
+下游环境需要能够找到 ncnn、nlohmann_json，以及本库启用的 JPEG 依赖；依赖安装在非标准位置时，将其安装前缀一并加入 `CMAKE_PREFIX_PATH`。
 
 公共头文件为 `include/hunyuan_ocr/runtime.h`。`hunyuan_ocr::Runtime` 使用 pImpl，公共
 接口不暴露 ncnn 类型。
