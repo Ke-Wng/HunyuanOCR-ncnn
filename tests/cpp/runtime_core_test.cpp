@@ -304,6 +304,30 @@ std::string require_throws(Function&& function, const std::string& message) {
     std::exit(1);
 }
 
+void test_vocab_rejects_corruption_without_shifting_ids() {
+    const std::string vocab_path = "/tmp/hunyuan_ocr_core_vocab_validation.txt";
+    const std::string merges_path = "/tmp/hunyuan_ocr_core_merges_validation.txt";
+    { std::ofstream merges(merges_path); }
+    for (const std::string contents : {"a\n\nb\n", "a\r\n\r\nb\r\n", "a\na\n"}) {
+        {
+            std::ofstream vocab(vocab_path, std::ios::binary);
+            vocab << contents;
+        }
+        require_throws<std::runtime_error>(
+            [&] { BpeTokenizer::LoadFromFiles(vocab_path, merges_path, {}, false); },
+            "corrupt vocabulary must not silently renumber tokens");
+    }
+    {
+        std::ofstream vocab(vocab_path, std::ios::binary);
+        vocab << "a\r\nb\r\n";
+    }
+    const auto tokenizer = BpeTokenizer::LoadFromFiles(vocab_path, merges_path, {}, false);
+    require_true(tokenizer.vocab_size() == 2 && tokenizer.decode({0, 1}) == "ab",
+                 "valid CRLF vocabulary preserves IDs");
+    std::remove(vocab_path.c_str());
+    std::remove(merges_path.c_str());
+}
+
 std::string repeat(const std::string& unit, int count) {
     std::string out;
     for (int i = 0; i < count; ++i) out += unit;
@@ -596,6 +620,7 @@ int main() {
     test_standard_rope();
     test_bbpe_decodes_split_utf8_sequence();
     test_bbpe_keeps_literal_escapes_and_hash_merges();
+    test_vocab_rejects_corruption_without_shifting_ids();
     test_clean_repeated_substrings_counts_code_points();
     test_utf8_helpers();
     test_utf8_stream_emitter_holds_back_partial_sequences();

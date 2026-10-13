@@ -415,9 +415,9 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
             if (vocabulary_size_ <= 0) {
                 throw std::runtime_error("setting.vocab_size must be positive");
             }
-            if (static_cast<size_t>(vocabulary_size_) < tokenizer_->vocab_size()) {
+            if (static_cast<size_t>(vocabulary_size_) != tokenizer_->vocab_size()) {
                 throw std::runtime_error("setting.vocab_size (" + std::to_string(vocabulary_size_) +
-                                         ") is smaller than the tokenizer vocabulary (" +
+                                         ") differs from the tokenizer vocabulary (" +
                                          std::to_string(tokenizer_->vocab_size()) + ")");
             }
         }

@@ -22,13 +22,14 @@ std::vector<std::string> BpeTokenizer::LoadVocab(const std::string& vocab_path) 
     vocab.reserve(50000);
     std::string line;
     while (std::getline(ifs, line)) {
-        if (!line.empty()) {
-            if (line.back() == '\r') {
-                line.pop_back();  // strip CR
-            }
-            vocab.push_back(line);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) {
+            throw std::runtime_error("Empty vocab entry at token " + std::to_string(vocab.size()) +
+                                     ": " + vocab_path);
         }
+        vocab.push_back(line);
     }
+    if (ifs.bad()) throw std::runtime_error("Failed to read vocab file: " + vocab_path);
     return vocab;
 }
 
@@ -37,7 +38,9 @@ std::unordered_map<std::string, int> BpeTokenizer::BuildTokenToId(
     std::unordered_map<std::string, int> m;
     m.reserve(id_to_token.size() * 2);
     for (size_t i = 0; i < id_to_token.size(); ++i) {
-        m.emplace(id_to_token[i], static_cast<int>(i));
+        if (!m.emplace(id_to_token[i], static_cast<int>(i)).second) {
+            throw std::runtime_error("Duplicate vocab entry at token " + std::to_string(i));
+        }
     }
     return m;
 }
