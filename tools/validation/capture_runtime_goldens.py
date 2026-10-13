@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from tools.validation.e2e_contract import build_golden, sha256_file
+from tools.validation.runtime_command import runtime_command
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST = ROOT / "tests" / "data" / "e2e_strict_samples.json"
@@ -38,40 +39,6 @@ def profile_golden(sample: dict[str, Any], profile: str) -> str:
         return sample["profile_goldens"][profile]
     except KeyError as exc:
         raise SystemExit(f"sample {sample['id']} has no profile golden for {profile}") from exc
-
-
-def runtime_command(
-    executable: Path,
-    model: Path,
-    image: Path,
-    sample: dict[str, Any],
-    profile: str,
-    threads: int,
-    vulkan_device: int,
-    report_path: Path,
-) -> list[str]:
-    command = [
-        str(executable),
-        "--model",
-        str(model),
-        "--image",
-        str(image),
-        "--prompt",
-        sample["prompt"],
-        "--threads",
-        str(threads),
-        "--max-new-tokens",
-        str(sample.get("max_new_tokens", 32768)),
-        "--repetition-penalty",
-        str(sample.get("repetition_penalty", 1.08)),
-        "--vulkan-device",
-        str(vulkan_device),
-        "--vulkan-precision",
-        "mixed" if profile == "vulkan_mixed_ar" else "fp32",
-        "--json-output",
-        str(report_path),
-    ]
-    return command
 
 
 def host_fingerprint(vulkan_device: int) -> dict[str, str]:

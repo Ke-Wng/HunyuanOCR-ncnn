@@ -15,6 +15,7 @@ from tools.validation.e2e_contract import (  # noqa: E402
     assert_report_matches_golden,
     assert_reports_match,
 )
+from tools.validation.runtime_command import PROFILES, runtime_command  # noqa: E402
 
 ASSETS = ROOT / "assets" / "hunyuan_ocr"
 MANIFEST = ROOT / "tests" / "data" / "e2e_samples.json"
@@ -29,7 +30,6 @@ pytestmark = [
         reason="set HUNYUAN_OCR_RUN_E2E=1 to run heavy end-to-end OCR regression",
     ),
     pytest.mark.skipif(not ASSETS.exists(), reason="exported assets not present"),
-    pytest.mark.skipif(not (BUILD_DIR / "hunyuan-ocr").exists(), reason="CLI is not built"),
 ]
 
 
@@ -68,49 +68,40 @@ def materialize_image(tmp_path: Path, sample: dict) -> Path:
     return image_path
 
 
-def xfail_if_decoder_is_static_seq8() -> None:
-    decoder_param = ASSETS / "hunyuan_ocr_text_decoder.ncnn.param"
-    if not decoder_param.exists():
-        return
-    text = decoder_param.read_text(encoding="utf-8")
-    if " 2=8" in text and " 2=-1" not in text:
-        pytest.xfail(
-            "current text_decoder asset is fixed to the pnnx trace sequence length; "
-            "re-export a dynamic decoder before recording/running E2E goldens"
-        )
+def selected_profiles() -> list[str]:
+    value = os.environ.get("HUNYUAN_OCR_E2E_PROFILES", "cpu_ar")
+    profiles = [item.strip() for item in value.split(",") if item.strip()]
+    if not profiles:
+        raise pytest.UsageError("HUNYUAN_OCR_E2E_PROFILES must select at least one profile")
+    unknown = sorted(set(profiles) - set(PROFILES))
+    if unknown:
+        raise pytest.UsageError(f"unknown HUNYUAN_OCR_E2E_PROFILES: {unknown}")
+    return list(dict.fromkeys(profiles))
+
+
+def e2e_command(
+    sample: dict, profile: str, report_path: Path, image_path: Path | None = None
+) -> list[str]:
+    build = VULKAN_BUILD_DIR if profile.startswith("vulkan_") else BUILD_DIR
+    return runtime_command(
+        build / "hunyuan-ocr",
+        ASSETS,
+        image_path if image_path is not None else ROOT / sample["image"],
+        sample,
+        profile,
+        int(os.environ.get("HUNYUAN_OCR_E2E_THREADS", sample.get("threads", 4))),
+        int(os.environ.get("HUNYUAN_OCR_VULKAN_DEVICE", "0")),
+        report_path,
+    )
 
 
 @pytest.mark.parametrize("sample", load_samples(), ids=lambda sample: sample["id"])
-def test_e2e_fixed_sample(sample: dict, tmp_path: Path):
-    xfail_if_decoder_is_static_seq8()
-
+@pytest.mark.parametrize("profile", selected_profiles())
+def test_e2e_fixed_sample(sample: dict, profile: str, tmp_path: Path):
     image_path = materialize_image(tmp_path, sample)
     report_path = tmp_path / f"{sample['id']}.report.json"
 
-    command = [
-        str(BUILD_DIR / "hunyuan-ocr"),
-        "--model",
-        str(ASSETS),
-        "--image",
-        str(image_path),
-        "--prompt",
-        sample["prompt"],
-        "--threads",
-        str(sample["threads"]),
-        "--max-new-tokens",
-        str(sample["max_new_tokens"]),
-        "--json-output",
-        str(report_path),
-    ]
-    if os.environ.get("HUNYUAN_OCR_RUN_VULKAN") == "1":
-        command.extend(
-            [
-                "--vulkan-device",
-                os.environ.get("HUNYUAN_OCR_VULKAN_DEVICE", "0"),
-                "--vulkan-precision",
-                os.environ.get("HUNYUAN_OCR_VULKAN_PRECISION", "fp32"),
-            ]
-        )
+    command = e2e_command(sample, profile, report_path, image_path)
 
     subprocess.run(
         command,
@@ -129,66 +120,13 @@ def test_e2e_fixed_sample(sample: dict, tmp_path: Path):
     assert report["stop_reason"] == "max_new_tokens"
     assert report["generated_token_ids"], "model produced no token ids"
 
-    # This legacy one-token sample is a smoke test for image/grid wiring only.
+    # This one-token sample is a smoke test for image/grid wiring only.
     # Full token/text equality is intentionally gated by test_e2e_strict_profile,
     # whose goldens come from the official reference generator.
 
 
 def strict_samples() -> list[dict]:
     return json.loads(STRICT_MANIFEST.read_text(encoding="utf-8"))
-
-
-def selected_profiles() -> list[str]:
-    value = os.environ.get("HUNYUAN_OCR_E2E_PROFILES", "cpu_ar")
-    profiles = [item.strip() for item in value.split(",") if item.strip()]
-    if not profiles:
-        raise pytest.UsageError("HUNYUAN_OCR_E2E_PROFILES must select at least one profile")
-    valid = {
-        "cpu_ar",
-        "cpu_dflash",
-        "vulkan_fp32_ar",
-        "vulkan_fp32_dflash",
-        "vulkan_mixed_ar",
-        "vulkan_mixed_dflash",
-    }
-    unknown = sorted(set(profiles) - valid)
-    if unknown:
-        raise pytest.UsageError(f"unknown HUNYUAN_OCR_E2E_PROFILES: {unknown}")
-    return profiles
-
-
-def strict_command(sample: dict, profile: str, report_path: Path) -> list[str]:
-    is_vulkan = profile.startswith("vulkan_")
-    command = [str((VULKAN_BUILD_DIR if is_vulkan else BUILD_DIR) / "hunyuan-ocr")]
-    command.extend(
-        [
-            "--model",
-            str(ASSETS),
-            "--image",
-            str(ROOT / sample["image"]),
-            "--prompt",
-            sample["prompt"],
-            "--threads",
-            os.environ.get("HUNYUAN_OCR_E2E_THREADS", "4"),
-            "--max-new-tokens",
-            str(sample["max_new_tokens"]),
-            "--repetition-penalty",
-            str(sample.get("repetition_penalty", 1.08)),
-            "--json-output",
-            str(report_path),
-        ]
-    )
-    if profile.endswith("_dflash"):
-        command.append("--dflash")
-    if is_vulkan:
-        command.extend(["--vulkan-device", os.environ.get("HUNYUAN_OCR_VULKAN_DEVICE", "0")])
-        command.extend(
-            [
-                "--vulkan-precision",
-                "mixed" if "mixed" in profile else "fp32",
-            ]
-        )
-    return command
 
 
 def ar_profile(profile: str) -> str:
@@ -228,12 +166,12 @@ def test_e2e_strict_profile(sample: dict, profile: str, tmp_path: Path):
     if not golden_path.exists():
         pytest.fail(
             f"missing strict golden {golden_path}; generate the official CPU golden with "
-            "tools.validation.generate_e2e_reference.py or capture the selected backend "
-            "profile with tools.validation.capture_runtime_goldens.py, then review it"
+            "python -m tools.validation.generate_e2e_reference or capture the selected backend "
+            "profile with python -m tools.validation.capture_runtime_goldens, then review it"
         )
     report_path = tmp_path / f"{sample['id']}-{profile}.json"
     subprocess.run(
-        strict_command(sample, profile, report_path),
+        e2e_command(sample, profile, report_path),
         cwd=ROOT,
         check=True,
         timeout=int(os.environ.get("HUNYUAN_OCR_E2E_TIMEOUT", "3600")),
@@ -253,7 +191,7 @@ def test_e2e_strict_profile(sample: dict, profile: str, tmp_path: Path):
     if profile.endswith("_dflash"):
         ar_report_path = tmp_path / f"{sample['id']}-{ar_profile(profile)}.json"
         subprocess.run(
-            strict_command(sample, ar_profile(profile), ar_report_path),
+            e2e_command(sample, ar_profile(profile), ar_report_path),
             cwd=ROOT,
             check=True,
             timeout=int(os.environ.get("HUNYUAN_OCR_E2E_TIMEOUT", "3600")),

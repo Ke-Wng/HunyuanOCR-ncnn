@@ -17,16 +17,9 @@ from tools.validation.e2e_contract import (
     report_contract,
     sha256_file,
 )
+from tools.validation.runtime_command import PROFILES, runtime_command
 
 ROOT = Path(__file__).resolve().parents[2]
-PROFILES = (
-    "cpu_ar",
-    "cpu_dflash",
-    "vulkan_fp32_ar",
-    "vulkan_fp32_dflash",
-    "vulkan_mixed_ar",
-    "vulkan_mixed_dflash",
-)
 PAIRS = (
     ("cpu_ar", "cpu_dflash"),
     ("vulkan_fp32_ar", "vulkan_fp32_dflash"),
@@ -108,34 +101,17 @@ def run_matrix(args: argparse.Namespace) -> int:
             sid = sample["id"]
             image = (args.image_root / sample["image"]).resolve()
             report = directory / f"{sid}.json"
-            cap = args.max_new_tokens or sample.get("max_new_tokens", 4096)
-            command = [
-                str(executable),
-                "--model",
-                str(args.model.resolve()),
-                "--image",
-                str(image),
-                "--prompt",
-                sample["prompt"],
-                "--threads",
-                str(args.threads),
-                "--max-new-tokens",
-                str(cap),
-                "--repetition-penalty",
-                str(sample.get("repetition_penalty", 1.08)),
-                "--profile",
-                "--json-output",
-                str(report.resolve()),
-            ]
-            if vulkan:
-                command += [
-                    "--vulkan-device",
-                    str(args.vulkan_device),
-                    "--vulkan-precision",
-                    "mixed" if "mixed" in profile else "fp32",
-                ]
-            if profile.endswith("_dflash"):
-                command.append("--dflash")
+            command = runtime_command(
+                executable,
+                args.model.resolve(),
+                image,
+                sample,
+                profile,
+                args.threads,
+                args.vulkan_device,
+                report.resolve(),
+                max_new_tokens=args.max_new_tokens,
+            )
             row = {
                 "profile": profile,
                 "sample": sid,

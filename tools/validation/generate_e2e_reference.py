@@ -18,6 +18,7 @@ import torch
 from tools.export.export_hunyuan_ocr import require_transformers_class
 from tools.export.export_tokenizer import DEFAULT_MODEL_ID, resolve_model_path
 from tools.validation.e2e_contract import build_golden, sha256_file
+from tools.validation.runtime_command import DEFAULT_MAX_NEW_TOKENS
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST = ROOT / "tests" / "data" / "e2e_strict_samples.json"
@@ -107,7 +108,7 @@ def run_sample(model: Any, processor: Any, model_json: dict[str, Any], sample: d
         if isinstance(value, torch.Tensor):
             inputs[key] = value.to(device=model_device)
     input_ids = inputs["input_ids"]
-    max_new_tokens = int(sample.get("max_new_tokens", 32768))
+    max_new_tokens = int(sample.get("max_new_tokens", DEFAULT_MAX_NEW_TOKENS))
     repetition_penalty = float(sample.get("repetition_penalty", 1.08))
     with torch.inference_mode():
         output_ids = model.generate(

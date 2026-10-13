@@ -42,3 +42,5 @@ HUNYUAN_OCR_RUN_VULKAN_GELU=1 build-vulkan/runtime_core_test
 ```
 
 官方参考生成、独立后端 golden 捕获以及重型 strict pytest 的入口见 README。生成参考与重建基线应作为单独的、明确记录的步骤。
+
+限时矩阵、golden 捕获及 E2E pytest 共用 `tools.validation.runtime_command` 的 profile 映射和命令构造，省略生成长度时统一使用 4096。E2E smoke 和 strict 都通过 `HUNYUAN_OCR_E2E_PROFILES` 选择组合，Vulkan 构建目录由 `HUNYUAN_OCR_VULKAN_BUILD_DIR` 指定。旧 smoke 开关 `HUNYUAN_OCR_RUN_VULKAN` / `HUNYUAN_OCR_VULKAN_PRECISION` 已移除。过期的 static-seq8 xfail 已删除；图或模型不支持时应显式失败。

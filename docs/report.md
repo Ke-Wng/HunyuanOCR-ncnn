@@ -1,5 +1,7 @@
 # HunyuanOCR-ncnn 技术报告
 
+> 性能表保留历史实验数据，其中旧 Mixed 测量使用过低精度 Vision，不能代表当前 Vision FP32 策略。当前模块和验证命令分别见 [运行时结构](architecture.md) 与 [回归验证说明](validation.md)；最终策略的性能重测仍待完成。
+
 > 将 HunyuanOCR v1.5 的图像理解、自回归生成与 DFlash 投机解码链路部署到 ncnn，构建一个默认 CPU FP32、可选 Vulkan FP32/Mixed、支持可变尺寸图像且可从 C++ 直接调用的 OCR 运行时。
 
 ---
