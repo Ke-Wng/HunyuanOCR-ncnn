@@ -40,7 +40,10 @@ endif()
 
 add_library(hunyuan_ocr_ncnn_runtime
     src/runtime.cpp
-    src/internal/runtime_impl.cpp
+    src/internal/engine.cpp
+    src/internal/prefill.cpp
+    src/internal/decode_ar.cpp
+    src/internal/decode_dflash.cpp
     src/internal/text_runtime.cpp
     src/internal/sampling.cpp
     src/internal/text_utils.cpp
