@@ -1,6 +1,10 @@
 #include <mat.h>
 #include <net.h>
 
+#if NCNN_VULKAN
+#include <gpu.h>
+#endif
+
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
@@ -12,6 +16,7 @@
 
 #include "internal/image.h"
 #include "internal/image_preprocessor.h"
+#include "internal/vision_gelu.h"
 
 using nlohmann::json;
 using namespace hunyuan_ocr::internal;
@@ -64,7 +69,8 @@ HunyuanVisionPreprocessConfig preprocess_config(const json& config) {
 }
 
 void run_one(ncnn::Net& vision_net, const HunyuanVisionPreprocessor& preprocessor,
-             const std::string& image_path, const std::string& output_root, int hidden_size) {
+             const std::string& image_path, const std::string& output_root, int hidden_size,
+             int vulkan_device) {
     const ncnn::Mat bgr = load_image(image_path);
     if (bgr.empty()) {
         throw std::runtime_error("failed to load image " + image_path);
@@ -89,6 +95,10 @@ void run_one(ncnn::Net& vision_net, const HunyuanVisionPreprocessor& preprocesso
 
     json meta = {
         {"image", image_path},
+        {"backend", vulkan_device >= 0 ? "vulkan" : "cpu"},
+        {"precision", "fp32"},
+        {"threads", vision_net.opt.num_threads},
+        {"vulkan_device", vulkan_device},
         {"target_w", input.target_w},
         {"target_h", input.target_h},
         {"grid_w", input.grid_w},
@@ -107,7 +117,10 @@ void run_one(ncnn::Net& vision_net, const HunyuanVisionPreprocessor& preprocesso
 
 int main(int argc, char** argv) {
     if (argc < 4) {
-        std::fprintf(stderr, "usage: %s <model_dir> <output_dir> <image>...\n", argv[0]);
+        std::fprintf(
+            stderr,
+            "usage: %s <model_dir> <output_dir> [--threads N] [--vulkan-device N] <image>...\n",
+            argv[0]);
         return 2;
     }
 
@@ -122,8 +135,51 @@ int main(int argc, char** argv) {
         const json& params = model_json.at("params");
         const std::string param_path = join_path(model_dir, params.at("vision_param"));
         const std::string bin_path = join_path(model_dir, params.at("vision_bin"));
+        int threads = 1;
+        int vulkan_device = -1;
+        std::vector<std::string> images;
+        for (int i = 3; i < argc; ++i) {
+            const std::string arg = argv[i];
+            if (arg == "--threads" || arg == "--vulkan-device") {
+                if (++i == argc) throw std::invalid_argument("missing value for " + arg);
+                size_t consumed = 0;
+                const std::string value = argv[i];
+                const int parsed = std::stoi(value, &consumed);
+                if (consumed != value.size()) throw std::invalid_argument("invalid " + arg);
+                if (arg == "--threads") {
+                    threads = parsed;
+                } else {
+                    vulkan_device = parsed;
+                }
+            } else if (arg.rfind("--", 0) == 0) {
+                throw std::invalid_argument("unknown option " + arg);
+            } else {
+                images.push_back(arg);
+            }
+        }
+        if (threads <= 0 || vulkan_device < -1 || images.empty()) {
+            throw std::invalid_argument("invalid replay arguments");
+        }
         ncnn::Net vision_net;
-        vision_net.opt.num_threads = 1;
+        vision_net.opt.num_threads = threads;
+        vision_net.opt.use_fp16_packed = false;
+        vision_net.opt.use_fp16_storage = false;
+        vision_net.opt.use_fp16_arithmetic = false;
+        vision_net.opt.use_fp16_uniform = false;
+        vision_net.opt.use_bf16_packed = false;
+        vision_net.opt.use_bf16_storage = false;
+        if (vulkan_device >= 0) {
+#if NCNN_VULKAN
+            if (ncnn::create_gpu_instance() != 0 || vulkan_device >= ncnn::get_gpu_count()) {
+                throw std::invalid_argument("Vulkan device unavailable");
+            }
+            vision_net.set_vulkan_device(vulkan_device);
+            vision_net.opt.use_vulkan_compute = true;
+#else
+            throw std::invalid_argument("replay was built without Vulkan");
+#endif
+        }
+        register_vision_gelu(vision_net);
         if (vision_net.load_param(param_path.c_str()) != 0 ||
             vision_net.load_model(bin_path.c_str()) != 0) {
             throw std::runtime_error("failed to load vision ncnn graph");
@@ -131,8 +187,8 @@ int main(int argc, char** argv) {
 
         HunyuanVisionPreprocessor preprocessor(preprocess_config(model_json));
         const int hidden_size = model_json.at("setting").value("hidden_size", 1024);
-        for (int i = 3; i < argc; i++) {
-            run_one(vision_net, preprocessor, argv[i], output_dir, hidden_size);
+        for (const std::string& image : images) {
+            run_one(vision_net, preprocessor, image, output_dir, hidden_size, vulkan_device);
         }
         return 0;
     } catch (const std::exception& e) {

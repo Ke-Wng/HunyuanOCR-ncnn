@@ -21,6 +21,7 @@
 #include "internal/text_runtime.h"
 #include "internal/text_utils.h"
 #include "internal/tokenizer/bpe_tokenizer.h"
+#include "internal/vision_gelu.h"
 #include "internal/xdrope.h"
 
 using namespace hunyuan_ocr::internal;
@@ -302,6 +303,53 @@ std::string require_throws(Function&& function, const std::string& message) {
     }
     std::fprintf(stderr, "FAIL: %s (no exception)\n", message.c_str());
     std::exit(1);
+}
+
+void test_vulkan_vision_gelu_matches_erfc() {
+#if NCNN_VULKAN
+    const char* enabled = std::getenv("HUNYUAN_OCR_RUN_VULKAN_GELU");
+    if (!enabled || std::string(enabled) != "1") return;
+    require_true(ncnn::create_gpu_instance() == 0 && ncnn::get_gpu_count() > 0,
+                 "opt-in GELU test requires Vulkan");
+    ncnn::Net network;
+    network.set_vulkan_device(0);
+    network.opt.use_vulkan_compute = true;
+    network.opt.use_fp16_storage = network.opt.use_fp16_packed = false;
+    network.opt.use_fp16_arithmetic = network.opt.use_fp16_uniform = false;
+    network.opt.use_bf16_storage = network.opt.use_bf16_packed = false;
+    register_vision_gelu(network);
+    require_true(
+        network.load_param_mem(
+            "7767517\n2 2\nInput input 0 1 input\nGELU activation 1 1 input output\n") == 0,
+        "load GELU test graph");
+    const unsigned char empty_weights[4] = {};
+    require_true(network.load_model(empty_weights) == 0, "load weightless GELU test graph");
+    // Odd sizes cover tail elements and packed matrices, not just vec4-aligned blobs.
+    for (const auto& shape : {std::pair<int, int>{4097, 1}, {1152, 17}, {4304, 7}}) {
+        ncnn::Mat input(shape.first, shape.second);
+        for (int y = 0; y < input.h; ++y) {
+            float* row = input.row(y);
+            for (int x = 0; x < input.w; ++x) row[x] = ((x + y) % 2001 - 1000) * 0.01F;
+        }
+        input.row(0)[0] = -307.0F;
+        input.row(0)[1] = 307.0F;
+        auto extractor = network.create_extractor();
+        require_true(extractor.input("input", input) == 0, "input GELU curve");
+        ncnn::Mat actual;
+        require_true(extractor.extract("output", actual) == 0, "extract GELU curve");
+        require_true(actual.w == input.w && actual.h == input.h, "GELU preserves shape");
+        for (int y = 0; y < input.h; ++y) {
+            const float* expected_input = input.row(y);
+            const float* output = actual.row(y);
+            for (int x = 0; x < input.w; ++x) {
+                const double value = expected_input[x];
+                const float expected = 0.5 * value * std::erfc(-value / std::sqrt(2.0));
+                require_true(std::isfinite(output[x]), "GELU remains finite");
+                require_close(output[x], expected, 2e-6F, "Vulkan GELU matches erf, not tanh");
+            }
+        }
+    }
+#endif
 }
 
 void test_vocab_rejects_corruption_without_shifting_ids() {
@@ -621,6 +669,7 @@ int main() {
     test_bbpe_decodes_split_utf8_sequence();
     test_bbpe_keeps_literal_escapes_and_hash_merges();
     test_vocab_rejects_corruption_without_shifting_ids();
+    test_vulkan_vision_gelu_matches_erfc();
     test_clean_repeated_substrings_counts_code_points();
     test_utf8_helpers();
     test_utf8_stream_emitter_holds_back_partial_sequences();

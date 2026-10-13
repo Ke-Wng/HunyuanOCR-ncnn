@@ -18,6 +18,7 @@
 #include "internal/sampling.h"
 #include "internal/text_runtime.h"
 #include "internal/text_utils.h"
+#include "internal/vision_gelu.h"
 #include "internal/xdrope.h"
 
 namespace hunyuan_ocr::internal {
@@ -267,6 +268,7 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
             dflash_bin = model_file_path(model_path, params, "dflash_bin");
         }
 
+        register_vision_gelu(*vision_net_);
         if (vision_net_->load_param(vision_param.c_str()) != 0 ||
             vision_net_->load_model(vision_bin.c_str()) != 0 ||
             text_embed_net_->load_param(text_embed_param.c_str()) != 0 ||

@@ -46,6 +46,7 @@ add_library(hunyuan_ocr_ncnn_runtime
     src/internal/text_utils.cpp
     src/internal/image_preprocessor.cpp
     src/internal/image.cpp
+    src/internal/vision_gelu.cpp
     src/internal/xdrope.cpp
     src/internal/tokenizer/bpe_tokenizer.cpp
 )
