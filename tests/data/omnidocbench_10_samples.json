@@ -1,0 +1,328 @@
+[
+  {
+    "id": "omni_01_zh_book",
+    "image": "images/docstructbench_dianzishu_zhongwenzaixian-o.O-61520788.pdf_391.jpg",
+    "task_type": "doc_parse",
+    "prompt": "提取文档图片中正文的所有信息用markdown格式表示，其中页眉、页脚部分忽略，表格用html格式表达，文档中公式用latex格式表示，按照阅读顺序组织进行解析。",
+    "max_new_tokens": 4096,
+    "repetition_penalty": 1.08,
+    "selection_label": "中文单栏书籍",
+    "page_attribute": {
+      "data_source": "book",
+      "language": "simplified_chinese",
+      "layout": "single_column",
+      "special_issue": [
+        "table_horizontal",
+        "table_omission_line"
+      ],
+      "subset": "v1.5"
+    },
+    "width": 1339,
+    "height": 1889,
+    "image_sha256": "c8cf71eb2f717727dc2d8a3ae5da1e388f6be7bb1e2c4addbde5d40dafb270f6",
+    "annotation_sha256": "b925d27bc800c720ce69b833f14143f71e70da2cfc5edd8c16c26a8f5480b013",
+    "annotation_features": {
+      "nonignored_category_counts": {
+        "abandon": 1,
+        "equation_isolated": 1,
+        "header": 1,
+        "page_number": 1,
+        "table": 1,
+        "table_caption": 1,
+        "text_block": 12
+      },
+      "annotation_characters": 1266,
+      "relations": 1
+    }
+  },
+  {
+    "id": "omni_02_en_paper_formula",
+    "image": "images/docstructbench_llm-raw-scihub-o.O-j.physletb.2004.11.060.pdf_2.jpg",
+    "task_type": "doc_parse",
+    "prompt": "提取文档图片中正文的所有信息用markdown格式表示，其中页眉、页脚部分忽略，表格用html格式表达，文档中公式用latex格式表示，按照阅读顺序组织进行解析。",
+    "max_new_tokens": 4096,
+    "repetition_penalty": 1.08,
+    "selection_label": "英文双栏论文与公式",
+    "page_attribute": {
+      "data_source": "academic_literature",
+      "language": "english",
+      "layout": "double_column",
+      "special_issue": [
+        "None"
+      ],
+      "subset": "v1.5"
+    },
+    "width": 1517,
+    "height": 2059,
+    "image_sha256": "541783bee53320d7e227b7caf6241706a2e4fcb049d9342dc47e2f32fd546aa6",
+    "annotation_sha256": "0c920aba87f3bfe03ec0ccd32b2cc094e3f5a8631038bfb8f7cd012a4c273a81",
+    "annotation_features": {
+      "nonignored_category_counts": {
+        "equation_caption": 6,
+        "equation_isolated": 7,
+        "header": 1,
+        "page_number": 1,
+        "text_block": 14,
+        "title": 1
+      },
+      "annotation_characters": 4012,
+      "relations": 6
+    }
+  },
+  {
+    "id": "omni_03_zh_report_table",
+    "image": "images/page-3c690b07-30d7-4e77-bf20-012f0080fb1d.png",
+    "task_type": "doc_parse",
+    "prompt": "提取文档图片中正文的所有信息用markdown格式表示，其中页眉、页脚部分忽略，表格用html格式表达，文档中公式用latex格式表示，按照阅读顺序组织进行解析。",
+    "max_new_tokens": 4096,
+    "repetition_penalty": 1.08,
+    "selection_label": "中文研报表格",
+    "page_attribute": {
+      "data_source": "research_report",
+      "language": "simplified_chinese",
+      "layout": "single_column",
+      "special_issue": [],
+      "subset": "table_hard"
+    },
+    "width": 1654,
+    "height": 2245,
+    "image_sha256": "319abfb5393081cd64dddfafc60cef7488eee3bc67aa6711ad2f0f1278748ec2",
+    "annotation_sha256": "387211a2eeba70b89a85a2a96acf8260e940746c093ef0e814345181441d3ada",
+    "annotation_features": {
+      "nonignored_category_counts": {
+        "abandon": 1,
+        "header": 3,
+        "page_number": 1,
+        "table": 1,
+        "text_block": 1,
+        "title": 2
+      },
+      "annotation_characters": 1776,
+      "relations": 0
+    }
+  },
+  {
+    "id": "omni_04_en_newspaper",
+    "image": "images/newspaper_5e266dfd9c498cab274e12a7b4a75755_2.jpg",
+    "task_type": "doc_parse",
+    "prompt": "提取文档图片中正文的所有信息用markdown格式表示，其中页眉、页脚部分忽略，表格用html格式表达，文档中公式用latex格式表示，按照阅读顺序组织进行解析。",
+    "max_new_tokens": 4096,
+    "repetition_penalty": 1.08,
+    "selection_label": "英文三栏报纸",
+    "page_attribute": {
+      "data_source": "newspaper",
+      "language": "english",
+      "layout": "three_column",
+      "special_issue": [],
+      "subset": "v1.5"
+    },
+    "width": 1700,
+    "height": 2200,
+    "image_sha256": "e8d9a93d30fa7b81e920d83f27f5512c4083add1011c646d199c14c5fae21d39",
+    "annotation_sha256": "3a7c4b2ebfe4fed55650e04021224231af7fbfc8445b083c862242fa6d9584f7",
+    "annotation_features": {
+      "nonignored_category_counts": {
+        "header": 2,
+        "text_block": 17
+      },
+      "annotation_characters": 7280,
+      "relations": 2
+    }
+  },
+  {
+    "id": "omni_05_zh_magazine",
+    "image": "images/docstructbench_dianzishu_zhongwenzaixian-o.O-63686436.pdf_57.jpg",
+    "task_type": "doc_parse",
+    "prompt": "提取文档图片中正文的所有信息用markdown格式表示，其中页眉、页脚部分忽略，表格用html格式表达，文档中公式用latex格式表示，按照阅读顺序组织进行解析。",
+    "max_new_tokens": 4096,
+    "repetition_penalty": 1.08,
+    "selection_label": "中文混合栏杂志",
+    "page_attribute": {
+      "data_source": "magazine",
+      "language": "simplified_chinese",
+      "layout": "1andmore_column",
+      "special_issue": [
+        "None"
+      ],
+      "subset": "v1.5"
+    },
+    "width": 1339,
+    "height": 1890,
+    "image_sha256": "5aaa63188e6c242b4078f3388704af6257cb0a02793648a7cde05203549050f6",
+    "annotation_sha256": "acbc7d432ed844a26dd07a49dbd9e82e33413a2630be6c9f2cbf3667499de223",
+    "annotation_features": {
+      "nonignored_category_counts": {
+        "abandon": 1,
+        "figure": 4,
+        "figure_caption": 7,
+        "header": 1,
+        "page_number": 1,
+        "text_block": 7,
+        "title": 5
+      },
+      "annotation_characters": 416,
+      "relations": 7
+    }
+  },
+  {
+    "id": "omni_06_en_presentation",
+    "image": "images/PPT_Keuk Chan Narith_page_019.png",
+    "task_type": "doc_parse",
+    "prompt": "提取文档图片中正文的所有信息用markdown格式表示，其中页眉、页脚部分忽略，表格用html格式表达，文档中公式用latex格式表示，按照阅读顺序组织进行解析。",
+    "max_new_tokens": 4096,
+    "repetition_penalty": 1.08,
+    "selection_label": "英文彩色幻灯片",
+    "page_attribute": {
+      "data_source": "PPT2PDF",
+      "language": "english",
+      "layout": "single_column",
+      "special_issue": [
+        "colorful_backgroud"
+      ],
+      "subset": "v1.5"
+    },
+    "width": 2000,
+    "height": 1500,
+    "image_sha256": "acf4898f87424c531f9b4bd35ba7edc1745e9faa8a65f95cce610dd892690d1f",
+    "annotation_sha256": "6b606ecbfa92e9209074e880810ddaf3b4108d8c0ddcbfc2e98705e7b0103ff2",
+    "annotation_features": {
+      "nonignored_category_counts": {
+        "text_block": 1,
+        "title": 1
+      },
+      "annotation_characters": 236,
+      "relations": 0
+    }
+  },
+  {
+    "id": "omni_07_mixed_textbook",
+    "image": "images/page-df88c6e5-891e-4984-9f69-8d83891ecb67.png",
+    "task_type": "doc_parse",
+    "prompt": "提取文档图片中正文的所有信息用markdown格式表示，其中页眉、页脚部分忽略，表格用html格式表达，文档中公式用latex格式表示，按照阅读顺序组织进行解析。",
+    "max_new_tokens": 4096,
+    "repetition_penalty": 1.08,
+    "selection_label": "中英混合复杂版式教材",
+    "page_attribute": {
+      "data_source": "colorful_textbook",
+      "language": "en_ch_mixed",
+      "layout": "other_layout",
+      "special_issue": [],
+      "subset": "layout_hard"
+    },
+    "width": 2339,
+    "height": 3308,
+    "image_sha256": "3d03188aa69bef851292e2267f7f49a7f7811aed7078072ef2b154d260085b3f",
+    "annotation_sha256": "b25bb4141a3e14c3627487c2de1314073b2ba3992fd757e2f36652194f3d7372",
+    "annotation_features": {
+      "nonignored_category_counts": {
+        "abandon": 1,
+        "figure": 6,
+        "figure_caption": 3,
+        "header": 1,
+        "list_group": 3,
+        "page_number": 1,
+        "text_block": 26,
+        "title": 3
+      },
+      "annotation_characters": 801,
+      "relations": 0
+    }
+  },
+  {
+    "id": "omni_08_en_exam_formula",
+    "image": "images/exam_paper_en-file-putnam-archive_2016_Solutions_2016s_page_002.png",
+    "task_type": "doc_parse",
+    "prompt": "提取文档图片中正文的所有信息用markdown格式表示，其中页眉、页脚部分忽略，表格用html格式表达，文档中公式用latex格式表示，按照阅读顺序组织进行解析。",
+    "max_new_tokens": 4096,
+    "repetition_penalty": 1.08,
+    "selection_label": "英文双栏试卷与公式",
+    "page_attribute": {
+      "data_source": "exam_paper",
+      "language": "english",
+      "layout": "double_column",
+      "special_issue": [
+        "None"
+      ],
+      "subset": "v1.5"
+    },
+    "width": 1700,
+    "height": 2200,
+    "image_sha256": "792c01b5d3d1c98c6d9848eba9a1fdc1a55542af1ae50c106c140b0fcfcd2909",
+    "annotation_sha256": "f3491609129d9d2b445eca9c32f96738a92c49650d244f3040eb9d9c8524a7a6",
+    "annotation_features": {
+      "nonignored_category_counts": {
+        "equation_isolated": 5,
+        "figure": 1,
+        "page_number": 1,
+        "text_block": 15
+      },
+      "annotation_characters": 4806,
+      "relations": 1
+    }
+  },
+  {
+    "id": "omni_09_zh_handwritten_note",
+    "image": "images/page-14cd673f-d86d-45a7-a13e-2b4e1d91c08f.png",
+    "task_type": "doc_parse",
+    "prompt": "提取文档图片中正文的所有信息用markdown格式表示，其中页眉、页脚部分忽略，表格用html格式表达，文档中公式用latex格式表示，按照阅读顺序组织进行解析。",
+    "max_new_tokens": 4096,
+    "repetition_penalty": 1.08,
+    "selection_label": "中文手写笔记",
+    "page_attribute": {
+      "data_source": "note",
+      "language": "simplified_chinese",
+      "layout": "single_column",
+      "special_issue": [
+        "handwriting"
+      ],
+      "subset": "equation_hard"
+    },
+    "width": 1654,
+    "height": 2339,
+    "image_sha256": "f86e61c9703b928d321311a91e50f462cd6e4c629d2309efd86de553c1fa73d5",
+    "annotation_sha256": "9bf4a964db94ccaf266283ed88072b2d4f3aa7f031034d4914c4b27681af3ef3",
+    "annotation_features": {
+      "nonignored_category_counts": {
+        "equation_isolated": 3,
+        "header": 3,
+        "text_block": 12,
+        "title": 1
+      },
+      "annotation_characters": 902,
+      "relations": 0
+    }
+  },
+  {
+    "id": "omni_10_traditional_scan",
+    "image": "images/page-07088b2f-f9d6-4c38-9c97-d7f98bc3d556.png",
+    "task_type": "doc_parse",
+    "prompt": "提取文档图片中正文的所有信息用markdown格式表示，其中页眉、页脚部分忽略，表格用html格式表达，文档中公式用latex格式表示，按照阅读顺序组织进行解析。",
+    "max_new_tokens": 4096,
+    "repetition_penalty": 1.08,
+    "selection_label": "繁体古籍与扫描变形",
+    "page_attribute": {
+      "data_source": "historical_document",
+      "language": "traditional_chinese",
+      "layout": "other_layout",
+      "special_issue": [
+        "fuzzy_content",
+        "geometric_deformation"
+      ],
+      "subset": "layout_hard"
+    },
+    "width": 4306,
+    "height": 3289,
+    "image_sha256": "15a13b0cb26a2e25929287f8532001a2b958bc9e0c71ea20ce345c86881bb882",
+    "annotation_sha256": "53acf4d2cc0429d627627d10528db01b07df842f792163ced0b4d9eaeb1f1846",
+    "annotation_features": {
+      "nonignored_category_counts": {
+        "header": 2,
+        "list_group": 3,
+        "page_number": 2,
+        "text_block": 42
+      },
+      "annotation_characters": 437,
+      "relations": 0
+    }
+  }
+]

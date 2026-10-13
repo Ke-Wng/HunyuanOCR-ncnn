@@ -1,5 +1,7 @@
 # 运行时回归
 
+OmniDocBench 最终使用固定十页集，清单、选样范围和运行命令见 [Omni 十页说明](omnidocbench.md)。
+
 `tools.validation.regression_matrix` 将模型运行与报告比对分开。它读取现有的已审阅基线和官方参考，不生成或修改 golden。默认使用仓库下的模型、release/Vulkan 二进制和 `tests/data/e2e_strict_samples.json`。
 
 ## 短样本回归
