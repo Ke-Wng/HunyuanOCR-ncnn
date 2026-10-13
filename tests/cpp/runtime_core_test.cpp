@@ -1,16 +1,25 @@
 #include <mat.h>
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
+#include <limits>
+#include <random>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "hunyuan_ocr/runtime.h"
 #include "internal/dflash_commit.h"
+#include "internal/image.h"
 #include "internal/image_preprocessor.h"
+#include "internal/sampling.h"
 #include "internal/text_runtime.h"
+#include "internal/text_utils.h"
 #include "internal/tokenizer/bpe_tokenizer.h"
 #include "internal/xdrope.h"
 
@@ -281,6 +290,297 @@ void test_bbpe_keeps_literal_escapes_and_hash_merges() {
     std::remove(merges_path.c_str());
 }
 
+template <typename Exception, typename Function>
+std::string require_throws(Function&& function, const std::string& message) {
+    try {
+        function();
+    } catch (const Exception& error) {
+        return error.what();
+    } catch (...) {
+        std::fprintf(stderr, "FAIL: %s (wrong exception type)\n", message.c_str());
+        std::exit(1);
+    }
+    std::fprintf(stderr, "FAIL: %s (no exception)\n", message.c_str());
+    std::exit(1);
+}
+
+std::string repeat(const std::string& unit, int count) {
+    std::string out;
+    for (int i = 0; i < count; ++i) out += unit;
+    return out;
+}
+
+// Mirrors tests/python/test_output_policy.py and tools/validation/output_policy.py.
+void test_clean_repeated_substrings_counts_code_points() {
+    require_true(clean_repeated_substrings("short") == "short", "short text is unchanged");
+    require_true(
+        clean_repeated_substrings("prefix" + repeat("unit", 500)) == std::string("prefix") + "unit",
+        "repeated suffix keeps exactly one unit");
+    // 700 code points (2100 bytes): below the 2000-character threshold, so Python keeps it.
+    const std::string han_700 = repeat("\xE5\xA5\xBD", 700);
+    require_true(clean_repeated_substrings(han_700) == han_700,
+                 "700 code points must not reach the 2000-character threshold");
+    // 2100 code points: trimmed to the 2-code-point unit, never inside a character.
+    require_true(
+        clean_repeated_substrings(repeat("\xE5\xA5\xBD", 2100)) == repeat("\xE5\xA5\xBD", 2),
+        "CJK repetition is trimmed on code point boundaries");
+    require_true(
+        clean_repeated_substrings("\xE4\xBD\xA0" + repeat("\xE5\xA5\xBD\xE4\xB8\x96", 1200)) ==
+            "\xE4\xBD\xA0" + std::string("\xE5\xA5\xBD\xE4\xB8\x96"),
+        "multi-code-point CJK unit keeps exactly one copy");
+    require_true(clean_repeated_substrings("ab" + repeat("\xF0\x9F\x98\x80", 2100)) ==
+                     "ab" + repeat("\xF0\x9F\x98\x80", 2),
+                 "four-byte code points are trimmed on boundaries");
+    // A non-repeating long text is unchanged.
+    std::string varied;
+    std::mt19937 generator(7);
+    for (int i = 0; i < 2500; ++i) varied += static_cast<char>('a' + generator() % 26);
+    require_true(clean_repeated_substrings(varied) == varied, "non-repeating text is unchanged");
+}
+
+void test_utf8_helpers() {
+    const std::string e_acute = "\xC3\xA9";
+    const std::string han = "\xE5\xA5\xBD";
+    const std::string emoji = "\xF0\x9F\x98\x80";
+    const std::string replacement = "\xEF\xBF\xBD";
+
+    require_true(utf8_complete_prefix_length("") == 0, "empty prefix");
+    require_true(utf8_complete_prefix_length("abc") == 3, "ASCII is complete");
+    require_true(utf8_complete_prefix_length("a" + e_acute) == 3, "complete 2-byte");
+    require_true(utf8_complete_prefix_length("a" + e_acute.substr(0, 1)) == 1, "held 2-byte");
+    require_true(utf8_complete_prefix_length("a" + han.substr(0, 1)) == 1, "held 3-byte lead");
+    require_true(utf8_complete_prefix_length("a" + han.substr(0, 2)) == 1, "held 3-byte partial");
+    require_true(utf8_complete_prefix_length("a" + han) == 4, "complete 3-byte");
+    for (size_t cut = 1; cut < 4; ++cut) {
+        require_true(utf8_complete_prefix_length(emoji.substr(0, cut)) == 0, "held 4-byte");
+    }
+    require_true(utf8_complete_prefix_length(emoji) == 4, "complete 4-byte");
+    require_true(utf8_complete_prefix_length("\x80\x80") == 2, "stray continuation is not held");
+    require_true(utf8_complete_prefix_length("\xFF") == 1, "invalid lead is not held");
+
+    require_true(sanitize_utf8("a" + han + emoji) == "a" + han + emoji, "valid text is unchanged");
+    require_true(sanitize_utf8("a" + han.substr(0, 2)) == "a" + replacement, "truncated tail");
+    require_true(sanitize_utf8("\xFF"
+                               "a") == replacement + "a",
+                 "invalid byte");
+    require_true(sanitize_utf8("\x80") == replacement, "stray continuation");
+    require_true(sanitize_utf8("\xC0\x80") == replacement + replacement, "overlong encoding");
+    require_true(sanitize_utf8("\xED\xA0\x80") == replacement + replacement + replacement,
+                 "UTF-16 surrogate");
+    require_true(sanitize_utf8("\xE5\xA5"
+                               "x") == replacement + "x",
+                 "truncated before ASCII");
+}
+
+void test_utf8_stream_emitter_holds_back_partial_sequences() {
+    const std::string han = "\xE5\xA5\xBD";
+    const std::string emoji = "\xF0\x9F\x98\x80";
+    const std::string full = "a" + han + emoji + "b";
+    std::string collected;
+    int calls = 0;
+    const std::function<void(const std::string&)> sink = [&](const std::string& fragment) {
+        require_true(sanitize_utf8(fragment) == fragment, "streamed fragment must be valid UTF-8");
+        collected += fragment;
+        ++calls;
+    };
+    Utf8StreamEmitter emitter(sink);
+    // Feed one byte at a time, as a BBPE decode of single-byte tokens would.
+    for (size_t length = 1; length <= full.size(); ++length) {
+        emitter.update(full.substr(0, length));
+    }
+    emitter.update(full, true);
+    require_true(collected == full, "stream must reassemble the text exactly");
+    require_true(calls == 4, "one callback per complete code point");
+
+    // A sequence cut by max_new_tokens is flushed as U+FFFD by the final update.
+    collected.clear();
+    Utf8StreamEmitter truncated(sink);
+    const std::string cut = "a" + han.substr(0, 2);
+    truncated.update(cut);
+    require_true(collected == "a", "partial tail is held back");
+    truncated.update(cut, true);
+    require_true(collected == "a\xEF\xBF\xBD", "partial tail becomes U+FFFD at the end");
+}
+
+void test_select_next_token_rejects_short_logits() {
+    ncnn::Mat logits(4);
+    logits.fill(0.5F);
+    TokenSampleConfig config;
+    config.vocabulary_size = 8;
+    const std::string message = require_throws<std::runtime_error>(
+        [&] { select_next_token(logits, {}, config); }, "logits shorter than vocab_size");
+    require_true(message.find("vocab") != std::string::npos, "error mentions the vocabulary");
+}
+
+void test_sampling_top_p_uses_renormalized_top_k() {
+    std::vector<float> probs = {0.5F, 0.3F, 0.15F, 0.05F};
+    apply_top_k(probs, 2);
+    apply_top_p(probs, 0.6F);
+    // Renormalized survivors are {0.625, 0.375}; 0.625 >= 0.6, so only the top token stays.
+    // Applying top_p to the original distribution would have kept two tokens.
+    require_true(probs[0] > 0.0F && probs[1] == 0.0F && probs[2] == 0.0F && probs[3] == 0.0F,
+                 "top_p must see the distribution renormalized after top_k");
+
+    std::vector<float> nucleus = {0.4F, 0.3F, 0.2F, 0.1F};
+    apply_top_p(nucleus, 0.75F);
+    require_true(nucleus[0] > 0.0F && nucleus[1] > 0.0F && nucleus[2] > 0.0F && nucleus[3] == 0.0F,
+                 "nucleus keeps the smallest set reaching top_p");
+}
+
+std::vector<int> sample_sequence(const std::optional<std::uint64_t>& seed, int count) {
+    ncnn::Mat logits(6);
+    float* values = logits;
+    const float raw[6] = {1.0F, 0.9F, 0.8F, 0.7F, 0.6F, 0.5F};
+    for (int i = 0; i < 6; ++i) values[i] = raw[i];
+    std::mt19937 rng = make_sampling_rng(seed);
+    TokenSampleConfig config;
+    config.vocabulary_size = 6;
+    config.do_sample = true;
+    config.temperature = 1.0F;
+    config.rng = &rng;
+    std::vector<int> tokens;
+    for (int i = 0; i < count; ++i) tokens.push_back(select_next_token(logits, {}, config));
+    return tokens;
+}
+
+void test_sampling_seed_is_deterministic() {
+    const auto first = sample_sequence(42, 64);
+    require_true(first == sample_sequence(42, 64), "same seed must reproduce the samples");
+    require_true(first != sample_sequence(43, 64), "different seeds must differ");
+    require_true(first != std::vector<int>(64, first[0]), "sampling must not collapse to argmax");
+}
+
+void test_generation_options_defaults_to_unseeded() {
+    const hunyuan_ocr::GenerationOptions options;
+    require_true(!options.seed.has_value(), "seed is unset by default");
+}
+
+void test_runtime_rejects_invalid_state_and_options() {
+    // Runtime::recognize validates options only after an Impl exists, so this needs a model.
+    const char* model = std::getenv("HUNYUAN_OCR_TEST_MODEL");
+    if (!model) return;
+    hunyuan_ocr::Runtime runtime(model);
+    hunyuan_ocr::GenerationOptions options;
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    options.temperature = nan;
+    require_throws<std::invalid_argument>([&] { runtime.recognize("x.png", "p", options); },
+                                          "NaN temperature");
+    options = {};
+    options.top_p = nan;
+    require_throws<std::invalid_argument>([&] { runtime.recognize("x.png", "p", options); },
+                                          "NaN top_p");
+    options = {};
+    options.repetition_penalty = inf;
+    require_throws<std::invalid_argument>([&] { runtime.recognize("x.png", "p", options); },
+                                          "infinite repetition_penalty");
+    options = {};
+    options.do_sample = true;
+    require_throws<std::invalid_argument>([&] { runtime.recognize("x.png", "p", options); },
+                                          "do_sample with temperature 0");
+
+    hunyuan_ocr::Runtime moved(std::move(runtime));
+    require_throws<std::logic_error>([&] { runtime.recognize("x.png", "p"); },
+                                     "moved-from recognize");
+    require_throws<std::logic_error>([&] { runtime.prefill("x.png", "p"); }, "moved-from prefill");
+}
+
+const unsigned char kJpeg16[] = {
+    0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
+    0x00, 0x01, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43, 0x00, 0x03, 0x02, 0x02, 0x03, 0x02, 0x02, 0x03,
+    0x03, 0x03, 0x03, 0x04, 0x03, 0x03, 0x04, 0x05, 0x08, 0x05, 0x05, 0x04, 0x04, 0x05, 0x0A, 0x07,
+    0x07, 0x06, 0x08, 0x0C, 0x0A, 0x0C, 0x0C, 0x0B, 0x0A, 0x0B, 0x0B, 0x0D, 0x0E, 0x12, 0x10, 0x0D,
+    0x0E, 0x11, 0x0E, 0x0B, 0x0B, 0x10, 0x16, 0x10, 0x11, 0x13, 0x14, 0x15, 0x15, 0x15, 0x0C, 0x0F,
+    0x17, 0x18, 0x16, 0x14, 0x18, 0x12, 0x14, 0x15, 0x14, 0xFF, 0xDB, 0x00, 0x43, 0x01, 0x03, 0x04,
+    0x04, 0x05, 0x04, 0x05, 0x09, 0x05, 0x05, 0x09, 0x14, 0x0D, 0x0B, 0x0D, 0x14, 0x14, 0x14, 0x14,
+    0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14,
+    0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14,
+    0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0xFF, 0xC0,
+    0x00, 0x11, 0x08, 0x00, 0x10, 0x00, 0x10, 0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11,
+    0x01, 0xFF, 0xC4, 0x00, 0x1F, 0x00, 0x00, 0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
+    0x0A, 0x0B, 0xFF, 0xC4, 0x00, 0xB5, 0x10, 0x00, 0x02, 0x01, 0x03, 0x03, 0x02, 0x04, 0x03, 0x05,
+    0x05, 0x04, 0x04, 0x00, 0x00, 0x01, 0x7D, 0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21,
+    0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07, 0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xA1, 0x08, 0x23,
+    0x42, 0xB1, 0xC1, 0x15, 0x52, 0xD1, 0xF0, 0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0A, 0x16, 0x17,
+    0x18, 0x19, 0x1A, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A,
+    0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A,
+    0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A,
+    0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8A, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99,
+    0x9A, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7,
+    0xB8, 0xB9, 0xBA, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4, 0xD5,
+    0xD6, 0xD7, 0xD8, 0xD9, 0xDA, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xF1,
+    0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA, 0xFF, 0xC4, 0x00, 0x1F, 0x01, 0x00, 0x03,
+    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+    0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0xFF, 0xC4, 0x00, 0xB5, 0x11, 0x00,
+    0x02, 0x01, 0x02, 0x04, 0x04, 0x03, 0x04, 0x07, 0x05, 0x04, 0x04, 0x00, 0x01, 0x02, 0x77, 0x00,
+    0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21, 0x31, 0x06, 0x12, 0x41, 0x51, 0x07, 0x61, 0x71, 0x13,
+    0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91, 0xA1, 0xB1, 0xC1, 0x09, 0x23, 0x33, 0x52, 0xF0, 0x15,
+    0x62, 0x72, 0xD1, 0x0A, 0x16, 0x24, 0x34, 0xE1, 0x25, 0xF1, 0x17, 0x18, 0x19, 0x1A, 0x26, 0x27,
+    0x28, 0x29, 0x2A, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49,
+    0x4A, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69,
+    0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88,
+    0x89, 0x8A, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6,
+    0xA7, 0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xC2, 0xC3, 0xC4,
+    0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA, 0xE2,
+    0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9,
+    0xFA, 0xFF, 0xDA, 0x00, 0x0C, 0x03, 0x01, 0x00, 0x02, 0x11, 0x03, 0x11, 0x00, 0x3F, 0x00, 0xF8,
+    0xFF, 0x00, 0xC1, 0x7F, 0x08, 0x7F, 0xD5, 0xFE, 0xE3, 0xF4, 0xAF, 0x79, 0xF0, 0x5F, 0xC2, 0x1F,
+    0xF5, 0x7F, 0xB8, 0xFD, 0x2B, 0xD8, 0xFC, 0x17, 0xF0, 0x87, 0xFD, 0x5F, 0xEE, 0x3F, 0x4A, 0xF7,
+    0x9F, 0x05, 0xFC, 0x21, 0xFF, 0x00, 0x57, 0xFB, 0x8F, 0xD2, 0x8C, 0x1E, 0x33, 0x6D, 0x43, 0xC3,
+    0xCF, 0x10, 0xFE, 0x0F, 0x7C, 0xFF, 0xD9,
+};
+const unsigned char kPng16[] = {
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+    0x52, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x10, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
+    0x91, 0x68, 0x36, 0x00, 0x00, 0x00, 0x1F, 0x49, 0x44, 0x41, 0x54, 0x78, 0xDA, 0x63, 0x64,
+    0x60, 0x60, 0x10, 0x60, 0xE0, 0x20, 0x1E, 0xB1, 0x30, 0x08, 0x70, 0x30, 0x30, 0x90, 0x80,
+    0x46, 0x35, 0x8C, 0x6A, 0x18, 0x3A, 0x1A, 0x00, 0xB7, 0xB8, 0x0A, 0x16, 0x36, 0x6A, 0xBE,
+    0x0B, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+};
+
+void write_bytes(const std::string& path, const unsigned char* data, size_t size) {
+    std::ofstream output(path, std::ios::binary);
+    output.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(size));
+}
+
+void test_load_image_reports_corrupt_files() {
+    const std::string good_jpeg = "/tmp/hunyuan_ocr_core_good.jpg";
+    const std::string good_png = "/tmp/hunyuan_ocr_core_good.png";
+    write_bytes(good_jpeg, kJpeg16, sizeof(kJpeg16));
+    write_bytes(good_png, kPng16, sizeof(kPng16));
+    const ncnn::Mat jpeg = load_image(good_jpeg);
+    require_true(jpeg.w == 16 && jpeg.h == 16 && jpeg.c == 3, "valid JPEG loads");
+    const ncnn::Mat png = load_image(good_png);
+    require_true(png.w == 16 && png.h == 16 && png.c == 3, "valid PNG loads");
+
+    const std::string bad = "/tmp/hunyuan_ocr_core_bad.bin";
+    const auto expect_failure = [&](const unsigned char* data, size_t size, const char* what) {
+        write_bytes(bad, data, size);
+        const std::string message =
+            require_throws<std::runtime_error>([&] { load_image(bad); }, what);
+        require_true(message.find(bad) != std::string::npos, "error names the file");
+        require_true(message.find("failed to load") != std::string::npos && message.back() != ':' &&
+                         message.back() != ' ',
+                     "error carries a decoder reason");
+    };
+    expect_failure(kJpeg16, sizeof(kJpeg16) / 2, "truncated JPEG");
+    expect_failure(kJpeg16, 40, "JPEG with a cut header");
+    expect_failure(kJpeg16, 2, "JPEG signature only");
+    expect_failure(kPng16, sizeof(kPng16) / 2, "truncated PNG");
+    expect_failure(kPng16, 12, "PNG with a cut header");
+    expect_failure(kPng16, 0, "empty file");
+    std::vector<unsigned char> corrupt(kJpeg16, kJpeg16 + sizeof(kJpeg16));
+    for (size_t i = 200; i < 260; ++i) corrupt[i] = static_cast<unsigned char>(0xFF - i);
+    corrupt[3] = 0x00;  // break the first marker
+    expect_failure(corrupt.data(), corrupt.size(), "corrupt JPEG");
+    require_throws<std::runtime_error>([&] { load_image("/tmp/hunyuan_ocr_core_missing.png"); },
+                                       "missing file");
+    std::remove(good_jpeg.c_str());
+    std::remove(good_png.c_str());
+    std::remove(bad.c_str());
+}
+
 }  // namespace
 
 int main() {
@@ -296,6 +596,15 @@ int main() {
     test_standard_rope();
     test_bbpe_decodes_split_utf8_sequence();
     test_bbpe_keeps_literal_escapes_and_hash_merges();
+    test_clean_repeated_substrings_counts_code_points();
+    test_utf8_helpers();
+    test_utf8_stream_emitter_holds_back_partial_sequences();
+    test_select_next_token_rejects_short_logits();
+    test_sampling_top_p_uses_renormalized_top_k();
+    test_sampling_seed_is_deterministic();
+    test_generation_options_defaults_to_unseeded();
+    test_runtime_rejects_invalid_state_and_options();
+    test_load_image_reports_corrupt_files();
     std::printf("runtime core tests passed\n");
     return 0;
 }

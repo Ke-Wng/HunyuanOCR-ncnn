@@ -1,40 +1,22 @@
 #include "hunyuan_ocr/runtime.h"
 
-#include <cstddef>
+#include <cmath>
 #include <stdexcept>
-#include <utility>
 
 #include "internal/engine.h"
 #include "internal/image.h"
+#include "internal/text_utils.h"
 
 namespace hunyuan_ocr {
 namespace {
 
-std::string clean_repeated_substrings(const std::string& text) {
-    constexpr size_t kMinTextLength = 2000;
-    constexpr size_t kMinRepeats = 10;
-    if (text.size() < kMinTextLength) return text;
-
-    for (size_t unit_length = 2; unit_length <= text.size() / kMinRepeats; ++unit_length) {
-        const std::string candidate = text.substr(text.size() - unit_length);
-        size_t count = 0;
-        auto end = static_cast<std::ptrdiff_t>(text.size() - unit_length);
-        while (end >= 0 && text.compare(static_cast<size_t>(end), unit_length, candidate) == 0) {
-            ++count;
-            end -= static_cast<std::ptrdiff_t>(unit_length);
-        }
-        if (count >= kMinRepeats) {
-            return text.substr(0, text.size() - unit_length * (count - 1));
-        }
-    }
-    return text;
-}
-
 Result make_result(const std::shared_ptr<internal::Context>& context, const Profile& profile,
-                   std::string raw_text = {}) {
+                   const std::string& raw_text = {}) {
     Result result;
-    result.raw_text = std::move(raw_text);
-    result.final_text = clean_repeated_substrings(result.raw_text);
+    // BBPE can stop in the middle of a code point (e.g. at max_new_tokens); keep the public
+    // strings valid UTF-8 by replacing any ill-formed or truncated tail with U+FFFD.
+    result.raw_text = internal::sanitize_utf8(raw_text);
+    result.final_text = internal::clean_repeated_substrings(result.raw_text);
     result.text = result.final_text;
     result.token_ids = context->generated_tokens;
     result.current_token = context->current_token;
@@ -64,6 +46,7 @@ Runtime::Runtime(Runtime&&) noexcept = default;
 Runtime& Runtime::operator=(Runtime&&) noexcept = default;
 
 Result Runtime::prefill(const std::string& image_path, const std::string& prompt) {
+    if (!impl_) throw std::logic_error("Runtime was moved from and can no longer be used");
     ncnn::Mat image = internal::load_image(image_path);
     if (image.empty()) {
         throw std::runtime_error("failed to load image: " + image_path);
@@ -75,20 +58,24 @@ Result Runtime::prefill(const std::string& image_path, const std::string& prompt
 Result Runtime::recognize(const std::string& image_path, const std::string& prompt,
                           const GenerationOptions& options,
                           const std::function<void(const std::string&)>& on_text) {
+    if (!impl_) throw std::logic_error("Runtime was moved from and can no longer be used");
     if (options.max_new_tokens <= 0) {
         throw std::invalid_argument("max_new_tokens must be positive");
     }
-    if (options.temperature < 0.0F) {
-        throw std::invalid_argument("temperature must be non-negative");
+    if (!std::isfinite(options.temperature) || options.temperature < 0.0F) {
+        throw std::invalid_argument("temperature must be finite and non-negative");
     }
-    if (options.top_p <= 0.0F || options.top_p > 1.0F) {
+    if (options.do_sample && options.temperature == 0.0F) {
+        throw std::invalid_argument("do_sample requires temperature > 0 (as in Hugging Face)");
+    }
+    if (!(options.top_p > 0.0F && options.top_p <= 1.0F)) {
         throw std::invalid_argument("top_p must be in (0, 1]");
     }
     if (options.top_k < -1) {
         throw std::invalid_argument("top_k must be -1, zero, or a positive integer");
     }
-    if (options.repetition_penalty <= 0.0F) {
-        throw std::invalid_argument("repetition_penalty must be positive");
+    if (!std::isfinite(options.repetition_penalty) || options.repetition_penalty <= 0.0F) {
+        throw std::invalid_argument("repetition_penalty must be finite and positive");
     }
     if (impl_->dflash_enabled && options.do_sample) {
         throw std::invalid_argument("DFlash currently supports greedy decoding only");

@@ -3,6 +3,7 @@
 #include <mat.h>
 #include <net.h>
 
+#include <random>
 #include <unordered_set>
 #include <vector>
 
@@ -17,6 +18,9 @@ struct TokenSampleConfig {
     int top_k = 0;
     float repetition_penalty = 1.0F;
     bool do_sample = false;
+    // Sampling RNG shared across the steps of one generation call (required for reproducible
+    // seeded runs).  When null, select_next_token draws from a fresh random_device-seeded RNG.
+    std::mt19937* rng = nullptr;
 };
 
 ncnn::Mat llm_run_text_embed(ncnn::Net& network, const std::vector<int>& token_ids);
