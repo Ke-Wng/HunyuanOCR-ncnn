@@ -2,8 +2,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <functional>
+#include <numeric>
 #include <random>
+#include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace hunyuan_ocr::internal {
@@ -65,6 +69,45 @@ void apply_top_p(std::vector<float>& probs, float p) {
 int sample_from_probs(const std::vector<float>& probs, std::mt19937& rng) {
     std::discrete_distribution<int> dist(probs.begin(), probs.end());
     return dist(rng);
+}
+
+int select_next_token(const ncnn::Mat& logits, const std::unordered_set<int>& history,
+                      const TokenSampleConfig& cfg) {
+    const int vocab_size = cfg.vocabulary_size > 0 ? cfg.vocabulary_size : logits.w;
+    if (logits.data == nullptr || logits.w < vocab_size) {
+        throw std::runtime_error("lm_head returned " + std::to_string(logits.w) +
+                                 " logits but the model vocabulary size is " +
+                                 std::to_string(vocab_size) + "; check vocab_size in model.json");
+    }
+    std::vector<float> scores(vocab_size);
+    std::memcpy(scores.data(), logits.data, sizeof(float) * vocab_size);
+
+    for (int t : history) {
+        if (t < 0 || t >= vocab_size) continue;
+        if (scores[t] < 0) {
+            scores[t] *= cfg.repetition_penalty;
+        } else {
+            scores[t] /= cfg.repetition_penalty;
+        }
+    }
+
+    if (!cfg.do_sample || cfg.temperature <= 0.0f) {
+        return (int)(std::max_element(scores.begin(), scores.end()) - scores.begin());
+    }
+
+    softmax_vec(scores, cfg.temperature);
+    // Same order as Hugging Face: top_k first, then top_p on the renormalized survivors.
+    if (cfg.top_k > 0) apply_top_k(scores, cfg.top_k);
+    if (cfg.top_p < 1.0f) apply_top_p(scores, cfg.top_p);
+
+    const float sum = std::accumulate(scores.begin(), scores.end(), 0.0f);
+    if (!std::isfinite(sum) || sum <= 0.0f) {
+        return (int)(std::max_element(scores.begin(), scores.end()) - scores.begin());
+    }
+
+    if (cfg.rng) return sample_from_probs(scores, *cfg.rng);
+    std::mt19937 fallback_rng = make_sampling_rng(std::nullopt);
+    return sample_from_probs(scores, fallback_rng);
 }
 
 }  // namespace hunyuan_ocr::internal

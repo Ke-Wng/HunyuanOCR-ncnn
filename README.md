@@ -127,7 +127,7 @@ DFlash 当前只接受贪心配置，支持 CPU FP32、Vulkan FP32 和 Vulkan Mi
 ```
 
 运行时矩阵回归、超时控制及现有基线比对使用 `tools.validation.regression_matrix`，
-命令与证据格式见 [回归验证说明](docs/validation.md)。
+命令与证据格式见 [回归验证说明](docs/validation.md)，模块职责见 [运行时结构](docs/architecture.md)。
 
 需要模型和导出资产时，可运行视觉重放：
 

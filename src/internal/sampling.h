@@ -1,11 +1,29 @@
 #pragma once
 
+#include <mat.h>
+
 #include <cstdint>
 #include <optional>
 #include <random>
+#include <unordered_set>
 #include <vector>
 
 namespace hunyuan_ocr::internal {
+
+struct TokenSampleConfig {
+    int vocabulary_size = 0;
+    float temperature = 1.0F;
+    float top_p = 1.0F;
+    int top_k = 0;
+    float repetition_penalty = 1.0F;
+    bool do_sample = false;
+    // Sampling RNG shared across the steps of one generation call (required for reproducible
+    // seeded runs).  When null, select_next_token draws from a fresh random_device-seeded RNG.
+    std::mt19937* rng = nullptr;
+};
+
+int select_next_token(const ncnn::Mat& logits, const std::unordered_set<int>& history,
+                      const TokenSampleConfig& config);
 
 // Builds the RNG for one generation call: deterministic when `seed` is set, otherwise seeded
 // from std::random_device.

@@ -6,7 +6,7 @@
 #include <numeric>
 #include <stdexcept>
 
-#include "internal/text_runtime.h"
+#include "internal/kv_cache_vk_allocator.h"
 #include "internal/vision_gelu.h"
 
 namespace hunyuan_ocr::internal {

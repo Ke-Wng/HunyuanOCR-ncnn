@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "internal/engine.h"
+#include "internal/kv_cache_vk_allocator.h"
 #include "internal/runtime_utils.h"
 #include "internal/text_runtime.h"
 #include "internal/xdrope.h"

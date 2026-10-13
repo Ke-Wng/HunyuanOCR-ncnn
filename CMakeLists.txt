@@ -44,7 +44,9 @@ add_library(hunyuan_ocr_ncnn_runtime
     src/internal/prefill.cpp
     src/internal/decode_ar.cpp
     src/internal/decode_dflash.cpp
-    src/internal/text_runtime.cpp
+    src/internal/text_runtime_cpu.cpp
+    src/internal/text_runtime_vulkan.cpp
+    src/internal/kv_cache_vk_allocator.cpp
     src/internal/sampling.cpp
     src/internal/text_utils.cpp
     src/internal/image_preprocessor.cpp
