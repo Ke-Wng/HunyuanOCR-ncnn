@@ -161,7 +161,7 @@ Engine::Engine(const std::string& model_path, const RuntimeOptions& options) {
             if (!vkdev_ || !vkdev_->is_valid()) {
                 throw std::runtime_error("selected Vulkan device is invalid");
             }
-            blob_vkallocator_ = vkdev_->acquire_blob_allocator();
+            blob_vkallocator_ = new KvCacheVkAllocator(vkdev_);
             staging_vkallocator_ = vkdev_->acquire_staging_allocator();
             if (!blob_vkallocator_ || !staging_vkallocator_) {
                 throw std::runtime_error("failed to acquire Vulkan allocators");
@@ -441,9 +441,7 @@ void Engine::release_vulkan_resources() {
     lm_head_net_.reset();
     text_decoder_net_.reset();
     vision_net_.reset();
-    if (vkdev_ && blob_vkallocator_) {
-        vkdev_->reclaim_blob_allocator(blob_vkallocator_);
-    }
+    delete blob_vkallocator_;
     if (vkdev_ && staging_vkallocator_) {
         vkdev_->reclaim_staging_allocator(staging_vkallocator_);
     }
@@ -491,6 +489,11 @@ std::shared_ptr<Context> Engine::prefill(const std::string& prompt_text,
     const int patch_width = grid_width / spatial_merge_size_;
     const int num_vision_tokens = patch_height * (patch_width + 1) + 2;
 
+#if NCNN_VULKAN
+    // Nothing is pending on the GPU between calls, so return the previous
+    // call's idle K/V-sized buffers before the vision tower allocates.
+    if (blob_vkallocator_) blob_vkallocator_->collect_garbage(true);
+#endif
     const auto vision_begin = std::chrono::steady_clock::now();
     ncnn::Mat vision_features = run_vision(vision_input.pixel_values);
     const auto vision_end = std::chrono::steady_clock::now();
