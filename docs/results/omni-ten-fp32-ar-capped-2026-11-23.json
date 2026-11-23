@@ -1,0 +1,183 @@
+{
+  "runtime_commit": "bc77e7863c28ce5da662f344cdb493ddc0369a56",
+  "started_utc": "2026-11-23T13:59:11.852340+00:00",
+  "manifest_sha256": "5f4a12b4425f686d02df39ab9a9360772f075822ce1f4949ee4680d405f108b1",
+  "executable_sha256": "40f61f8cae74917ae202eb389357e347fd15d17007f8c5a3cb9f98419f7f6919",
+  "model_json_sha256": "c212a933eff7c5a9d2ff43b347f5ae8b931e853a777f18c9fc1eb68b7d0a8ac9",
+  "host": {
+    "cpu": "Intel Xeon CPU Max 9468",
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "driver": "570.133.07",
+    "total_vram_mib": 24564
+  },
+  "settings": {
+    "profile": "vulkan_fp32_ar",
+    "vulkan_device": 0,
+    "threads": 32,
+    "max_pixels": 1835008,
+    "max_new_tokens": 4096,
+    "vulkan_timeout_seconds": 180,
+    "repetition_penalty": 1.08
+  },
+  "counts": {
+    "attempted": 10,
+    "completed_eos": 10,
+    "truncated": 0,
+    "timeout": 0,
+    "failed": 0
+  },
+  "wall_seconds": {
+    "min": 11.397,
+    "median": 33.779,
+    "max": 80.06
+  },
+  "device_memory_mib": {
+    "initial": 1,
+    "sampled_peak": 9519,
+    "sampling_interval_ms": 250
+  },
+  "timing_note": "One process per page; includes load time; file and driver caches not cleared.",
+  "review_note": "Spot-checked page starts against local text annotations. All starts match the page topic. The first comparison operator on the paper page differs from the annotation. No formal accuracy score.",
+  "cases": [
+    {
+      "id": "omni_01_zh_book",
+      "status": "completed",
+      "stop_reason": "eos",
+      "processed_image": [
+        1120,
+        1600
+      ],
+      "generated_tokens": 703,
+      "final_characters": 1274,
+      "wall_seconds": 39.918,
+      "inference_seconds": 33.126,
+      "report_sha256": "59acdab72e87fc3eb07bf91eeb6f317a4391f40fbeae9fbf7bbd734f79e734a4"
+    },
+    {
+      "id": "omni_02_en_paper_formula",
+      "status": "completed",
+      "stop_reason": "eos",
+      "processed_image": [
+        1152,
+        1568
+      ],
+      "generated_tokens": 1077,
+      "final_characters": 4014,
+      "wall_seconds": 55.406,
+      "inference_seconds": 48.414,
+      "report_sha256": "aa3211632192fac21ffa2ead8830fdbeceaa9c8180c531a1011d3481c996fbbd"
+    },
+    {
+      "id": "omni_03_zh_report_table",
+      "status": "completed",
+      "stop_reason": "eos",
+      "processed_image": [
+        1152,
+        1568
+      ],
+      "generated_tokens": 834,
+      "final_characters": 1650,
+      "wall_seconds": 44.933,
+      "inference_seconds": 38.281,
+      "report_sha256": "948f3315904f2c603012c74ea603754956068e9ffd994f27960d42e16115c459"
+    },
+    {
+      "id": "omni_04_en_newspaper",
+      "status": "completed",
+      "stop_reason": "eos",
+      "processed_image": [
+        1184,
+        1536
+      ],
+      "generated_tokens": 1572,
+      "final_characters": 7286,
+      "wall_seconds": 80.06,
+      "inference_seconds": 73.406,
+      "report_sha256": "de3cbc69e0eac93094fdf55499416c3a0c0453e576044199cfeb3d7a4e138188"
+    },
+    {
+      "id": "omni_05_zh_magazine",
+      "status": "completed",
+      "stop_reason": "eos",
+      "processed_image": [
+        1120,
+        1600
+      ],
+      "generated_tokens": 280,
+      "final_characters": 429,
+      "wall_seconds": 20.673,
+      "inference_seconds": 14.238,
+      "report_sha256": "19d4694b0df94180fede3d5cca79995bdabdd6b16a0ecd9fc49e4c4c94672b50"
+    },
+    {
+      "id": "omni_06_en_presentation",
+      "status": "completed",
+      "stop_reason": "eos",
+      "processed_image": [
+        1536,
+        1152
+      ],
+      "generated_tokens": 46,
+      "final_characters": 237,
+      "wall_seconds": 11.397,
+      "inference_seconds": 5.012,
+      "report_sha256": "3c8ff7b25be64496e74ac0db281931e3c61aa0ef805e23750dae9b713dfe59fb"
+    },
+    {
+      "id": "omni_07_mixed_textbook",
+      "status": "completed",
+      "stop_reason": "eos",
+      "processed_image": [
+        1120,
+        1600
+      ],
+      "generated_tokens": 341,
+      "final_characters": 949,
+      "wall_seconds": 23.875,
+      "inference_seconds": 17.419,
+      "report_sha256": "716e221f8c6fd79a89c2ab0fd3c519c322a2159e15d7d3f343a8da50f9bb8d34"
+    },
+    {
+      "id": "omni_08_en_exam_formula",
+      "status": "completed",
+      "stop_reason": "eos",
+      "processed_image": [
+        1184,
+        1536
+      ],
+      "generated_tokens": 1498,
+      "final_characters": 4989,
+      "wall_seconds": 76.098,
+      "inference_seconds": 69.545,
+      "report_sha256": "4116a828a4f535c721a99231cbfd7705859e53981b661e7d3175f37e5cbbeab5"
+    },
+    {
+      "id": "omni_09_zh_handwritten_note",
+      "status": "completed",
+      "stop_reason": "eos",
+      "processed_image": [
+        1120,
+        1600
+      ],
+      "generated_tokens": 367,
+      "final_characters": 753,
+      "wall_seconds": 24.331,
+      "inference_seconds": 17.922,
+      "report_sha256": "a204c5ee2250d6bc71aceb02ded965af0bb131ed97313268efc967d62c274f85"
+    },
+    {
+      "id": "omni_10_traditional_scan",
+      "status": "completed",
+      "stop_reason": "eos",
+      "processed_image": [
+        1536,
+        1152
+      ],
+      "generated_tokens": 433,
+      "final_characters": 481,
+      "wall_seconds": 27.64,
+      "inference_seconds": 20.788,
+      "report_sha256": "7ff4da16488708a324595ac9e13c9786414197de586d664fcdaa2e3bcca19438"
+    }
+  ]
+}

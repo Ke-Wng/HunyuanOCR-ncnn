@@ -25,15 +25,16 @@
 
 ## 运行入口
 
-本机数据位于 `/home/wk/datasets/OmniDocBench`，包含 `OmniDocBench.json` 和 `images/`。其他机器可通过 `--image-root` 指向自己的数据目录。
+将 `--image-root` 指向本地数据集根目录。运行只使用该目录下的 `images/`。
 
-先使用 Vulkan FP32 AR 保存十页推理报告：
+以下命令复现 2026-11-23 的 Vulkan FP32 AR 复测。
 
 ```bash
 .venv/bin/python -m tools.validation.regression_matrix run vulkan_fp32_ar \
   --manifest tests/data/omnidocbench_10_samples.json \
-  --image-root /home/wk/datasets/OmniDocBench \
-  --threads 32 --out /path/to/new-omni-ten-run
+  --image-root /path/to/OmniDocBench \
+  --threads 32 --max-pixels 1835008 --vulkan-timeout 180 \
+  --out /path/to/new-omni-ten-run
 ```
 
 清单复用已有文档解析 prompt：按阅读顺序输出 Markdown，忽略页眉页脚，表格用 HTML，公式用 LaTeX。生成上限为 4096 tokens，重复惩罚为 1.08；超时与截断应在评测报告中保留。
@@ -42,7 +43,28 @@
 
 按用户要求，跳过 Omni 官方标注评分，不安装其评测依赖、不复制其项目代码，也不生成官方 benchmark 分数。原始标注仅用于固定选样和输入身份核验。移植一致性与多后端性能比较可作为独立检查。
 
-## 2026-10-13 实测结果
+## 2026-11-23 复测结果
+
+使用 `--max-pixels 1835008` 后，十页均以 EOS 正常结束。RTX 4090（24564 MiB、驱动 570.133.07）、32 线程、Vulkan FP32 AR 的逐页耗时为 11.40–80.06 秒，中位数 33.78 秒。每页启动一个进程，耗时包含模型加载。整卡显存每 250 毫秒采样一次，由 1 MiB 升至最高 9519 MiB。逐页哈希和耗时见 [复测摘要](results/omni-ten-fp32-ar-capped-2026-11-23.json)。
+
+| ID | 预处理尺寸 | 生成 tokens（含 EOS） | 进程耗时（秒） |
+| --- | ---: | ---: | ---: |
+| `omni_01_zh_book` | 1120 × 1600 | 703 | 39.92 |
+| `omni_02_en_paper_formula` | 1152 × 1568 | 1077 | 55.41 |
+| `omni_03_zh_report_table` | 1152 × 1568 | 834 | 44.93 |
+| `omni_04_en_newspaper` | 1184 × 1536 | 1572 | 80.06 |
+| `omni_05_zh_magazine` | 1120 × 1600 | 280 | 20.67 |
+| `omni_06_en_presentation` | 1536 × 1152 | 46 | 11.40 |
+| `omni_07_mixed_textbook` | 1120 × 1600 | 341 | 23.88 |
+| `omni_08_en_exam_formula` | 1184 × 1536 | 1498 | 76.10 |
+| `omni_09_zh_handwritten_note` | 1120 × 1600 | 367 | 24.33 |
+| `omni_10_traditional_scan` | 1536 × 1152 | 433 | 27.64 |
+
+抽查十页的输出开头均与原文主题对应。书籍页恢复了工程预算正文，研报页生成了 HTML 表格，试卷页生成了 LaTeX 公式。论文页开头仍有一个公式关系符与标注不同。这是完成率和定性检查，准确率未量化。
+
+原尺寸书籍页经过预处理后有 9912 个视觉 patch。16 头 FP32 attention 的分数张量需要 6287855616 字节，超过本机 4294967295 字节的 Vulkan 单 storage buffer 上限。加上分配检查后，书籍、教材和古籍三页在原设置下都返回明确的错误。降低像素预算可避开该限制，但小字和公式细节可能受影响。
+
+## 2026-10-13 原像素预算实测结果
 
 十页均已尝试：**3 页完成并以 EOS 停止，5 页在 90 秒限时后终止，2 页显存分配失败**。完成的三页都有明显内容问题，因此本批结果不能作为十页识别通过的证据。
 
@@ -61,8 +83,6 @@
 | `omni_09_zh_handwritten_note` | 中文手写笔记 | 超时 | 90.49 | — | — |
 | `omni_10_traditional_scan` | 繁体古籍 | 显存分配失败 | 8.25 | — | — |
 
-人工核对书籍原图后，66 字输出与页面的工程预算内容不符，且未生成表格。研报仅输出 8 字，未生成标注中存在的表格；杂志仅输出 1 字，未覆盖多文本块页面。五个超时页的日志末尾均出现重复输出；两次失败均记录 `vkAllocateMemory failed -2`，随后 Vision 报告推理失败或空输出。根因尚未定位。
+人工核对书籍原图后，66 字输出与页面的工程预算内容不符，且未生成表格。研报仅输出 8 字，未生成标注中存在的表格；杂志仅输出 1 字，未覆盖多文本块页面。五个超时页的日志末尾均出现重复输出；两次失败均记录 `vkAllocateMemory failed -2`，随后 Vision 报告推理失败或空输出。
 
 每页启动一个新 CLI 进程，表中耗时包含模型加载，且未清空文件或驱动缓存。首轮在第 1 页后因范围澄清而中断，后九页从新目录恢复；被中断的第 2 页尝试未计入表格。超时/失败页没有最终 JSON 报告，token 数和停止状态保留为空；未测量峰值显存、未进行 PyTorch 对照或其他后端比较。
-
-当前应先排查大尺寸输入下的输出异常和 Vision 显存分配问题，再决定成功演示内容。此批固定十页保留不变，官方评分继续跳过。

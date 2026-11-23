@@ -1,12 +1,27 @@
 # HunyuanOCR-ncnn
 
-HunyuanOCR-ncnn 是 [Tencent-Hunyuan/HunyuanOCR](https://github.com/Tencent-Hunyuan/HunyuanOCR)
-v1.5 的 ncnn 推理实现，支持 CPU FP32、Vulkan FP32/Mixed 与 DFlash 贪心解码。
-项目覆盖从可变尺寸图像预处理、视觉编码、图文 token 拼接、xdRoPE 到带 KV Cache
-的文本解码完整链路，并交付命令行程序 `hunyuan-ocr` 与可安装的 C++17 静态库。
+HunyuanOCR-ncnn 将 [HunyuanOCR v1.5](https://github.com/Tencent-Hunyuan/HunyuanOCR) 转成在 ncnn 上运行的命令行工具和 C++17 静态库。输入图片与提示词，可提取字幕、识别票据，或输出含 Markdown 正文、HTML 表格和 LaTeX 公式的文档解析结果。
 
-模块职责见 [运行时结构](docs/architecture.md)，验证入口见 [回归验证说明](docs/validation.md)。
-设计原理与历史性能测量见 [技术报告](docs/report.md)。
+支持 CPU FP32、Vulkan FP32/Mixed 与 DFlash 贪心解码。Python 用于准备模型和验证，运行时只需导出的 ncnn 模型与本地库。
+
+## 字幕识别演示
+
+构建 CPU 版本并导出模型后，可对仓库内的 [字幕样图](tests/data/reference_images/subtitle_movie.jpg) 运行以下命令。
+
+```bash
+./build/hunyuan-ocr \
+  --model assets/hunyuan_ocr \
+  --image tests/data/reference_images/subtitle_movie.jpg \
+  --prompt "提取图片中的字幕。" \
+  --threads 4 --max-new-tokens 256 --json-output subtitle.json
+```
+
+`subtitle.json` 的 `final_text` 中包含以下实测输出。
+
+```text
+对不起 我是诺曼·斯佩尔曼
+Sorry, I'm Norm. Spellman.
+```
 
 ## 环境要求
 
@@ -21,7 +36,7 @@ v1.5 的 ncnn 推理实现，支持 CPU FP32、Vulkan FP32/Mixed 与 DFlash 贪�
 ## 构建
 
 ```bash
-git clone https://github.com/Ke-Wng/HunyunOCR-ncnn.git HunyuanOCR-ncnn
+git clone https://github.com/Ke-Wng/HunyuanOCR-ncnn.git
 cd HunyuanOCR-ncnn
 git submodule update --init --recursive
 cmake --preset release -DHUNYUAN_OCR_REQUIRE_LIBJPEG=ON
@@ -68,16 +83,6 @@ python -m venv .venv
 
 ## 运行
 
-```bash
-./build/hunyuan-ocr \
-  --model assets/hunyuan_ocr \
-  --image tests/data/reference_images/subtitle_movie.jpg \
-  --prompt "提取图片中的字幕。" \
-  --threads 4 \
-  --max-new-tokens 256 \
-  --profile
-```
-
 使用设备 0 的 Vulkan FP32 后端：
 
 ```bash
@@ -105,6 +110,10 @@ DFlash 当前只接受贪心配置，支持 CPU FP32、Vulkan FP32 和 Vulkan Mi
 
 `--vulkan-precision mixed` 会让 Vision 保持 FP32、Decoder/KV Cache 优先使用 BF16 storage（不支持时使用 FP16），关闭 FP16 arithmetic，而对低精度敏感的 DFlash Draft 和 LM Head 保持 FP32。
 
+整页文档可用 `--max-pixels` 控制预处理后的像素预算。Vision attention 的缓冲区大小随 patch 数量平方增长，较大的输入可能超过 GPU 单缓冲区上限或可用显存。降低像素预算会缩小图片，可能影响小字识别。实测设置与运行命令见 [固定十页文档演示](docs/omnidocbench.md)。
+
+在 RTX 4090 上，以 Vulkan FP32 AR、32 线程和 `--max-pixels 1835008` 跑固定十页，十页均正常结束，单页进程耗时中位数 33.78 秒（含模型加载）。书籍、研报和试卷页分别生成了正文、HTML 表格和 LaTeX 公式。抽查发现一处公式关系符差异，完整准确率未量化。原像素预算的失败记录和复测明细见 [十页结果](docs/omnidocbench.md#2026-11-23-复测结果)。
+
 只测试 prefill 并输出结构化结果：
 
 ```bash
@@ -130,6 +139,7 @@ DFlash 当前只接受贪心配置，支持 CPU FP32、Vulkan FP32 和 Vulkan Mi
 
 运行时矩阵回归、超时控制及现有基线比对使用 `tools.validation.regression_matrix`，
 命令与证据格式见 [回归验证说明](docs/validation.md)，模块职责见 [运行时结构](docs/architecture.md)。
+设计原理与历史实验数据见 [技术报告](docs/report.md)。
 
 需要模型和导出资产时，可运行视觉重放：
 
