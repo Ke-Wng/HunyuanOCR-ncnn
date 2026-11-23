@@ -68,6 +68,8 @@ def run_matrix(args: argparse.Namespace) -> int:
         raise ValueError("threads and token cap must be positive")
     if args.vulkan_device < 0:
         raise ValueError("Vulkan device must be non-negative")
+    if args.max_pixels < 0:
+        raise ValueError("max pixels must be non-negative")
     if any(not math.isfinite(t) or t <= 0 for t in (args.cpu_timeout, args.vulkan_timeout)):
         raise ValueError("timeouts must be finite and positive")
     samples = select_samples(args.manifest, args.samples)
@@ -112,6 +114,8 @@ def run_matrix(args: argparse.Namespace) -> int:
                 report.resolve(),
                 max_new_tokens=args.max_new_tokens,
             )
+            if args.max_pixels:
+                command.extend(["--max-pixels", str(args.max_pixels)])
             row = {
                 "profile": profile,
                 "sample": sid,
@@ -279,6 +283,9 @@ def main() -> int:
     run.add_argument("--samples", nargs="+")
     run.add_argument("--threads", type=int, default=4)
     run.add_argument("--max-new-tokens", type=int)
+    run.add_argument(
+        "--max-pixels", type=int, default=0, help="override the model's image pixel budget"
+    )
     run.add_argument("--vulkan-device", type=int, default=0)
     run.add_argument("--cpu-timeout", type=float, default=60)
     run.add_argument("--vulkan-timeout", type=float, default=90)

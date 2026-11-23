@@ -15,6 +15,11 @@ ncnn::Mat Engine::run_vision(const ncnn::Mat& pixel_values) const {
     ncnn::Mat feats;
     ncnn::Extractor ex = vision_net_->create_extractor();
     if (ex.input("in0", pixel_values) != 0 || ex.extract("out0", feats) != 0 || feats.empty()) {
+        if (use_vulkan()) {
+            throw std::runtime_error(
+                "Vulkan vision inference failed; try a lower max_pixels "
+                "(CLI: --max-pixels) or use the CPU backend");
+        }
         throw std::runtime_error("hunyuan vision inference failed or returned empty output");
     }
     if (feats.w != hidden_size_) {

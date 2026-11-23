@@ -53,6 +53,7 @@ class KvCacheVkAllocator : public ncnn::VkBlobAllocator {
     void destroy(LargeBuffer& block);
 
     size_t large_threshold_;
+    size_t max_storage_buffer_range_;
     std::vector<LargeBuffer> large_buffers_;
 };
 #endif

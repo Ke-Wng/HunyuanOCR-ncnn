@@ -4,6 +4,7 @@
 #include <gpu.h>
 
 #include <algorithm>
+#include <cstdio>
 
 namespace hunyuan_ocr::internal {
 namespace {
@@ -25,7 +26,11 @@ size_t large_buffer_capacity(size_t size) {
 }  // namespace
 
 KvCacheVkAllocator::KvCacheVkAllocator(const ncnn::VulkanDevice* vkdev, size_t large_threshold)
-    : ncnn::VkBlobAllocator(vkdev), large_threshold_(large_threshold) {}
+    : ncnn::VkBlobAllocator(vkdev), large_threshold_(large_threshold) {
+    VkPhysicalDeviceProperties properties{};
+    ncnn::vkGetPhysicalDeviceProperties(vkdev->info.physical_device(), &properties);
+    max_storage_buffer_range_ = properties.limits.maxStorageBufferRange;
+}
 
 KvCacheVkAllocator::~KvCacheVkAllocator() {
     for (LargeBuffer& block : large_buffers_) destroy(block);
@@ -44,9 +49,16 @@ void KvCacheVkAllocator::destroy(LargeBuffer& block) {
 }
 
 ncnn::VkBufferMemory* KvCacheVkAllocator::fastMalloc(size_t size) {
+    if (size > max_storage_buffer_range_) {
+        std::fprintf(stderr, "Vulkan storage buffer needs %zu bytes, device limit is %zu bytes\n",
+                     size, max_storage_buffer_range_);
+        return nullptr;
+    }
     if (size < large_threshold_) return ncnn::VkBlobAllocator::fastMalloc(size);
 
-    const size_t capacity = large_buffer_capacity(size);
+    // ncnn binds the allocation capacity as the descriptor range. Capping the bucket
+    // keeps a valid near-limit request usable even when it rounds up past the limit.
+    const size_t capacity = std::min(large_buffer_capacity(size), max_storage_buffer_range_);
     LargeBuffer* found = nullptr;
     for (LargeBuffer& block : large_buffers_) {
         if (!block.in_use && block.capacity == capacity) {

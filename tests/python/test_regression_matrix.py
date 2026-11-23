@@ -52,6 +52,7 @@ def args(tmp_path: Path) -> argparse.Namespace:
     return argparse.Namespace(
         threads=1,
         max_new_tokens=None,
+        max_pixels=0,
         vulkan_device=0,
         cpu_timeout=0.01,
         vulkan_timeout=0.01,
@@ -83,6 +84,19 @@ def test_timeout_is_recorded_and_next_sample_runs(args, monkeypatch):
     assert [r["status"] for r in rows] == ["skipped_timeout", "completed"]
     assert rows[1]["report_sha256"]
     assert not (args.out / "cpu_ar/a.json").exists()
+
+
+def test_pixel_budget_is_forwarded_to_cli_and_recorded(args, monkeypatch):
+    args.max_pixels = 1_835_008
+
+    def execute(command, **kwargs):
+        assert command[command.index("--max-pixels") + 1] == "1835008"
+        return fake_success(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", execute)
+    assert run_matrix(args) == 0
+    rows = json.loads((args.out / "summary.json").read_text())["runs"]
+    assert all(row["command"][-2:] == ["--max-pixels", "1835008"] for row in rows)
 
 
 @pytest.mark.parametrize("failure", ["exit", "missing_report", "invalid_json"])
